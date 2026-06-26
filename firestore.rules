@@ -1,0 +1,34 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Users collection
+    match /users/{userId} {
+      // Read: only the user themselves
+      allow read: if request.auth != null && request.auth.uid == userId;
+
+      // Create: only by the user themselves, role MUST be "user"
+      allow create: if request.auth != null
+        && request.auth.uid == userId
+        && request.resource.data.role == "user";
+
+      // Update: user can update their own doc, but CANNOT change the role field
+      allow update: if request.auth != null
+        && request.auth.uid == userId
+        && request.resource.data.role == resource.data.role;
+
+      // Delete: not allowed from client
+      allow delete: if false;
+
+      // Watchlist sub-collection
+      match /watchlist/{docId} {
+        allow read, write: if request.auth != null && request.auth.uid == userId;
+      }
+
+      // History sub-collection
+      match /history/{docId} {
+        allow read, write: if request.auth != null && request.auth.uid == userId;
+      }
+    }
+  }
+}
