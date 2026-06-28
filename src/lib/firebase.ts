@@ -11,20 +11,25 @@ const firebaseConfig = {
   appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID,
 };
 
-const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
+// Cek apakah API Key tersedia (bisa saja kosong di build server Vercel sebelum env var diset)
+const canInitialize = !!firebaseConfig.apiKey;
 
-// ✅ Lazy — defer sampai pertama kali dipanggil, bukan saat module load
-let _db: ReturnType<typeof getFirestore> | null = null;
-let _auth: ReturnType<typeof getAuth> | null = null;
+let app: any = null;
+let auth: any = null;
+let db: any = null;
 
-export const auth = (() => {
-  if (!_auth) _auth = getAuth(app);
-  return _auth;
-})();
+if (canInitialize) {
+  try {
+    app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
+    auth = getAuth(app);
+    db = getFirestore(app);
+  } catch (error) {
+    console.error("Firebase client initialization failed:", error);
+  }
+} else {
+  // Mock fallback agar build Next.js (prerendering) tidak crash karena Firebase error
+  auth = {} as any;
+  db = {} as any;
+}
 
-export const db = (() => {
-  if (!_db) _db = getFirestore(app);
-  return _db;
-})();
-
-export { app };
+export { app, auth, db };
