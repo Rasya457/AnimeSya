@@ -23,6 +23,7 @@ const AnimeCard: React.FC<AnimeCardProps> = ({ anime, showEpisodeBadge = false, 
   return (
     <Link
       href={`/anime/${anime.animeId}`}
+      prefetch={false}
       className={`group relative flex flex-col ${widthClass} rounded-2xl overflow-hidden bg-zinc-950 border border-zinc-900/60 transition-all duration-500 ease-[cubic-bezier(0.25,1,0.5,1)] md:hover:-translate-y-1 md:hover:border-accent/40 md:hover:shadow-[0_12px_40px_rgba(0,0,0,0.8),_0_0_20px_rgba(16,185,129,0.1)] focus:outline-none`}
     >
       {/* Poster */}

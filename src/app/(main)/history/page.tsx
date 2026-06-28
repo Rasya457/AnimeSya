@@ -2,7 +2,10 @@
 
 import React, { useEffect, useState, useMemo } from "react";
 import Link from "next/link";
+import Image from "next/image";
 import { History, Trash2, Play, Clock, LayoutGrid, List, Search, X } from "lucide-react";
+import { useAuthStore } from "@/store/authStore";
+import { getHistoryKey } from "@/lib/historyKey";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -23,18 +26,18 @@ interface DateGroup {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-const HISTORY_KEY = "watch-history";
+const HISTORY_KEY_BASE = "watch-history"; // tidak dipakai langsung
 
-function getHistory(): HistoryItem[] {
+function getHistory(key: string): HistoryItem[] {
   try {
-    return JSON.parse(localStorage.getItem(HISTORY_KEY) ?? "[]");
+    return JSON.parse(localStorage.getItem(key) ?? "[]");
   } catch {
     return [];
   }
 }
 
-function saveHistory(items: HistoryItem[]) {
-  localStorage.setItem(HISTORY_KEY, JSON.stringify(items));
+function saveHistory(key: string, items: HistoryItem[]) {
+  localStorage.setItem(key, JSON.stringify(items));
 }
 
 function timeAgo(ts: number) {
@@ -76,13 +79,15 @@ function groupByDate(items: HistoryItem[]): DateGroup[] {
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function HistoryPage() {
+  const { user } = useAuthStore();
   const [items,   setItems]   = useState<HistoryItem[]>([]);
   const [view,    setView]    = useState<ViewMode>("grid");
   const [query,   setQuery]   = useState("");
   const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
-    const raw = getHistory();
+    const key = getHistoryKey(user?.id)
+    const raw = getHistory(key);
     const uniqueMap = new Map<string, HistoryItem>();
     for (const item of raw) {
       if (!uniqueMap.has(item.malId)) {
@@ -92,18 +97,20 @@ export default function HistoryPage() {
     const unique = Array.from(uniqueMap.values());
     setItems(unique.reverse());
     setMounted(true);
-  }, []);
+  }, [user?.id]);
 
   function handleRemove(malId: string, episode: number) {
-    const next = getHistory().filter(
+    const key = getHistoryKey(user?.id)
+    const next = getHistory(key).filter(
       (h) => !(h.malId === malId && h.episode === episode)
     );
-    saveHistory(next);
+    saveHistory(key, next);
     setItems(next.reverse());
   }
 
   function handleClear() {
-    saveHistory([]);
+    const key = getHistoryKey(user?.id)
+    saveHistory(key, []);
     setItems([]);
   }
 
@@ -331,10 +338,12 @@ function GridCard({
       style={{ animationDelay: `${delay}ms` }}
     >
       <div className="relative aspect-[2/3] rounded-xl overflow-hidden bg-zinc-900 border border-zinc-800/60 shadow-lg">
-        <img
-          src={item.poster || undefined}
+        <Image
+          src={item.poster || "/placeholder-poster.png"}
           alt={item.title}
-          className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-[1.06]"
+          fill
+          sizes="(max-width: 640px) 50vw, (max-width: 1024px) 25vw, 15vw"
+          className="object-cover transition-transform duration-500 group-hover:scale-[1.06]"
         />
 
         {/* Gradient */}
@@ -391,10 +400,12 @@ function ListRow({
     >
       {/* Poster thumb */}
       <div className="relative w-12 h-16 rounded-lg overflow-hidden bg-zinc-900 shrink-0 border border-zinc-800/50">
-        <img
-          src={item.poster || undefined}
+        <Image
+          src={item.poster || "/placeholder-poster.png"}
           alt={item.title}
-          className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
+          fill
+          sizes="48px"
+          className="object-cover transition-transform duration-300 group-hover:scale-105"
         />
       </div>
 

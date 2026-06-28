@@ -52,6 +52,11 @@ export async function GET(req: NextRequest) {
         completed,                   // anime tamat dari /home
       },
       pagination: ongoingJson?.pagination ?? null,
+    }, {
+      headers: {
+        // Cache di Vercel Edge 10 menit, stale 20 menit
+        'Cache-Control': 'public, s-maxage=600, stale-while-revalidate=1200',
+      },
     })
   } catch (e) {
     console.error('[proxy/home]', e)

@@ -3,6 +3,10 @@ import { notFound } from 'next/navigation'
 import { animeApi } from '@/lib/anime-api'
 import DetailClient from './DetailClient'
 
+// ISR: halaman di-cache dan diperbarui otomatis setiap 1 jam di background
+// Tanpa ini, setiap kunjungan akan fetch ulang ke API Jikan
+export const revalidate = 3600
+
 interface Props {
   params: Promise<{ slug: string }>
 }

@@ -11,9 +11,20 @@ const firebaseConfig = {
   appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID,
 };
 
-// Initialize Firebase
 const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
-const auth = getAuth(app);
-const db = getFirestore(app);
 
-export { app, auth, db };
+// ✅ Lazy — defer sampai pertama kali dipanggil, bukan saat module load
+let _db: ReturnType<typeof getFirestore> | null = null;
+let _auth: ReturnType<typeof getAuth> | null = null;
+
+export const auth = (() => {
+  if (!_auth) _auth = getAuth(app);
+  return _auth;
+})();
+
+export const db = (() => {
+  if (!_db) _db = getFirestore(app);
+  return _db;
+})();
+
+export { app };

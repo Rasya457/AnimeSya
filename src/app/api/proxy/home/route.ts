@@ -162,5 +162,10 @@ export async function GET(req: NextRequest) {
       last:     ongoingJson?.pagination?.last_visible_page  ?? 1,
       hasNext:  ongoingJson?.pagination?.has_next_page      ?? false,
     },
+  }, {
+    headers: {
+      // Cache di Vercel Edge 5 menit, stale-while-revalidate 10 menit
+      'Cache-Control': 'public, s-maxage=300, stale-while-revalidate=600',
+    },
   })
 }

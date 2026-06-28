@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef, useMemo } from 'react'
 import Link from 'next/link'
+import NextImage from 'next/image'
 import { useParams } from 'next/navigation'
 import {
   ChevronLeft, ChevronRight, RefreshCw,
@@ -11,10 +12,10 @@ import {
 } from 'lucide-react'
 import { useAuthStore } from '@/store/authStore'
 import { useToast } from '@/components/ui/Toast'
+import { getHistoryKey } from '@/lib/historyKey'
 
 type Server = 'sub' | 'dub' | 'indo'
 
-const HISTORY_KEY = 'watch-history'
 const EPISODE_DURATION_MS = 24 * 60 * 1000
 const SAVE_INTERVAL_MS = 15_000
 
@@ -65,10 +66,11 @@ function getAvatarBgColor(name: string): string {
   return colors[charCode % colors.length]
 }
 
-// ─── Helper: simpan history ───────────────────────────────────────────────────
-function persistHistory(entry: HistoryEntry) {
+// ─── Helper: simpan history (per-user) ───────────────────────────────────────
+function persistHistory(entry: HistoryEntry, userId?: string | null) {
+  const key = getHistoryKey(userId)
   try {
-    const prev: HistoryEntry[] = JSON.parse(localStorage.getItem(HISTORY_KEY) ?? '[]')
+    const prev: HistoryEntry[] = JSON.parse(localStorage.getItem(key) ?? '[]')
     const existing = prev.find(h => h.malId === entry.malId)
     const prevWatched = existing?.watchedEpisodes ?? (existing ? [existing.episode] : [])
     const watchedEpisodes = [...new Set([...prevWatched, entry.episode])]
@@ -78,7 +80,7 @@ function persistHistory(entry: HistoryEntry) {
       progress: Math.max(entry.progress, existing?.progress ?? 0),
     }
     const next = [updated, ...prev.filter(h => h.malId !== entry.malId)].slice(0, 30)
-    localStorage.setItem(HISTORY_KEY, JSON.stringify(next))
+    localStorage.setItem(key, JSON.stringify(next))
   } catch { /* silent */ }
 }
 
@@ -120,17 +122,17 @@ function saveReaction(malId: string, epNum: number, reaction: ReactionState) {
 // ─── Persist pilihan kualitas (server Sub Indo) biar konsisten antar episode ──
 const QUALITY_KEY = 'watch-quality-indo'
 
-function loadQuality(): 720 | 480 | 360 {
+function loadQuality(): 1080 | 720 | 480 | 360 {
   try {
     const stored = localStorage.getItem(QUALITY_KEY)
-    if (stored === '720' || stored === '480' || stored === '360') {
-      return Number(stored) as 720 | 480 | 360
+    if (stored === '1080' || stored === '720' || stored === '480' || stored === '360') {
+      return Number(stored) as 1080 | 720 | 480 | 360
     }
   } catch { /* silent */ }
-  return 720
+  return 720  // default 720p
 }
 
-function saveQuality(q: 720 | 480 | 360) {
+function saveQuality(q: 1080 | 720 | 480 | 360) {
   try {
     localStorage.setItem(QUALITY_KEY, String(q))
   } catch { /* silent */ }
@@ -149,6 +151,7 @@ function dbUrl(malId: string, ep: number) {
 const SOURCE_LABELS: Record<string, string> = {
   otakudesu: 'Otakudesu',
   nontonanimeid: 'NontonAnimeID',
+  samehadaku: 'Samehadaku',
 }
 
 // ─── Loading overlay ──────────────────────────────────────────────────────────
@@ -351,6 +354,7 @@ export default function WatchClient() {
   const malId = String(params.animeId)
   const epNum = Number(params.episode)
   const { toast } = useToast()
+  const { user } = useAuthStore()
 
   const [server, setServer] = useState<Server>('sub')
   const [iframeKey, setIframeKey] = useState(0)
@@ -365,9 +369,9 @@ export default function WatchClient() {
   const [indoEpTitle, setIndoEpTitle] = useState<string | null>(null)
   const [infoReady, setInfoReady] = useState(false)
 
-  // ── Quality selector (indo server only) — scraper rata-rata maks 720p,
-  // jadi 1080 & "Auto" dihapus, default langsung 720 ──────────────────────
-  const [quality, setQuality] = useState<720 | 480 | 360>(720)
+  // ── Quality selector (indo server only) — Otakudesu maks 720p, tapi
+  // Samehadaku bisa 1080p, jadi semua tier dimunculkan. Default 720p. ─────────
+  const [quality, setQuality] = useState<1080 | 720 | 480 | 360>(720)
   const [availableQualities, setAvailableQualities] = useState<number[]>([])
 
   // Load kualitas tersimpan sekali pas mount, biar konsisten antar episode &
@@ -474,10 +478,11 @@ export default function WatchClient() {
       episode: epNum,
       watchedAt: Date.now(),
       progress,
-    })
+    }, user?.id)
     progressRef.current = progress
     try {
-      const history: HistoryEntry[] = JSON.parse(localStorage.getItem(HISTORY_KEY) ?? '[]')
+      const key = getHistoryKey(user?.id)
+      const history: HistoryEntry[] = JSON.parse(localStorage.getItem(key) ?? '[]')
       const existing = history.find(h => h.malId === malId)
       if (existing?.watchedEpisodes) setWatchedEpNumbers(existing.watchedEpisodes)
     } catch { /* silent */ }
@@ -540,7 +545,8 @@ export default function WatchClient() {
     setDislikeCount(dislikeBaseRef.current + (savedReaction.disliked ? 1 : 0))
 
     try {
-      const history: HistoryEntry[] = JSON.parse(localStorage.getItem(HISTORY_KEY) ?? '[]')
+      const key = getHistoryKey(user?.id)
+      const history: HistoryEntry[] = JSON.parse(localStorage.getItem(key) ?? '[]')
       const existing = history.find(h => h.malId === malId)
       if (existing?.watchedEpisodes) {
         setWatchedEpNumbers(existing.watchedEpisodes)
@@ -598,7 +604,7 @@ export default function WatchClient() {
 
     return () => { stopTracking() }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [malId, epNum])
+  }, [malId, epNum, user?.id])
 
   // ── Episode list ──────────────────────────────────────────────────────────
   useEffect(() => {
@@ -1177,19 +1183,20 @@ export default function WatchClient() {
           {server === 'indo' && (
             <div className="flex items-center gap-2 flex-wrap pt-2 border-t border-white/5">
               <span className="text-[9px] font-bold text-zinc-500 uppercase tracking-widest pl-0.5">Kualitas</span>
-              {[720, 480, 360].map(q => {
+              {([1080, 720, 480, 360] as const).map(q => {
                 const known = availableQualities.length > 0
                 const isAvailable = !known || availableQualities.includes(q)
+                const isBest = known && q === Math.max(...availableQualities)
                 return (
                   <button
                     key={q}
                     onClick={() => {
-                      const next = q as 720 | 480 | 360
+                      const next = q as 1080 | 720 | 480 | 360
                       setQuality(next)
                       saveQuality(next)
                     }}
                     title={known && !isAvailable ? 'Gak tersedia buat episode ini — bakal jatuh ke kualitas terbaik yang ada' : undefined}
-                    className={`px-3 py-1 rounded-lg text-[10px] font-bold border transition-all cursor-pointer active:scale-95 focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none
+                    className={`relative px-3 py-1 rounded-lg text-[10px] font-bold border transition-all cursor-pointer active:scale-95 focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none
                       ${quality === q
                         ? 'bg-emerald-600/20 text-emerald-300 border-emerald-500/40'
                         : isAvailable
@@ -1198,6 +1205,10 @@ export default function WatchClient() {
                       }`}
                   >
                     {q}p
+                    {/* dot kecil kalau ini kualitas tertinggi yang ada di episode ini */}
+                    {isBest && quality !== q && (
+                      <span className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full bg-teal-400" aria-label="Kualitas terbaik tersedia" />
+                    )}
                   </button>
                 )
               })}
@@ -1213,7 +1224,7 @@ export default function WatchClient() {
           {server === 'indo' && availableQualities.length > 0 && Math.max(...availableQualities) <= 480 && (
             <div className="flex items-center justify-between gap-2 flex-wrap">
               <p className="text-[10px] text-amber-400/90 font-medium bg-amber-950/20 border border-amber-700/20 px-3 py-2 rounded-xl flex-1">
-                ⚠️ {SOURCE_LABELS[indoSource] ?? indoSource} cuma punya {Math.max(...availableQualities)}p buat episode ini — gak ada mirror dengan kualitas lebih tinggi sama sekali.
+                ⚠️ Semua source Indo cuma punya {Math.max(...availableQualities)}p buat episode ini — coba server SUB untuk kualitas lebih tinggi.
               </p>
               <button
                 onClick={() => switchServer('sub')}
@@ -1237,7 +1248,7 @@ export default function WatchClient() {
               <div className="flex items-center gap-2">
                 <input
                   type="text"
-                  placeholder="Edit judul sesuai nama di Otakudesu, lalu Enter…"
+                  placeholder="Edit judul anime lalu Enter (coba nama versi Indo)…"
                   value={indoManual}
                   onChange={e => setIndoManual(e.target.value)}
                   onKeyDown={e => {
@@ -1279,7 +1290,7 @@ export default function WatchClient() {
         </div>
 
         {/* ── 4. Action Buttons ── */}
-        <div className="flex items-center gap-2 overflow-x-auto scrollbar-hide px-4 md:px-0 pb-0.5">
+        <div data-lenis-prevent className="flex items-center gap-2 overflow-x-auto scrollbar-hide px-4 md:px-0 pb-0.5">
           <button
             onClick={() => {
               const newLiked = !liked
@@ -1348,11 +1359,12 @@ export default function WatchClient() {
         <div className="rounded-2xl overflow-hidden border border-white/5 bg-[#0d0d1a] mx-4 md:mx-0">
           <div className="flex items-start gap-3 p-4">
             {animeDetails?.poster ? (
-              <img
+              <NextImage
                 src={animeDetails.poster}
                 alt="Poster"
+                width={56}
+                height={80}
                 className="w-14 h-20 rounded-xl object-cover border border-white/5 flex-shrink-0 shadow-lg shadow-black/50"
-                onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }}
               />
             ) : (
               <div className="w-14 h-20 rounded-xl flex-shrink-0 bg-gradient-to-br from-zinc-800 to-zinc-900 border border-white/5 flex items-center justify-center">
@@ -1413,7 +1425,7 @@ export default function WatchClient() {
               <Loader2 className="w-4 h-4 animate-spin mr-2" aria-hidden="true" /> Memuat episode…
             </div>
           ) : (
-            <div className="flex items-center gap-2 overflow-x-auto scrollbar-hide py-1 -mx-1 px-1">
+            <div data-lenis-prevent className="flex items-center gap-2 overflow-x-auto scrollbar-hide py-1 -mx-1 px-1">
               {episodeList.map((ep) => {
                 const isCurrent = ep.number === epNum
                 const isEpWatched = watchedEpNumbers.includes(ep.number)
@@ -1488,7 +1500,7 @@ export default function WatchClient() {
             </div>
 
             {/* Content */}
-            <div className="overflow-y-auto pr-1 flex flex-col gap-3 my-1">
+            <div data-lenis-prevent className="overflow-y-auto pr-1 flex flex-col gap-3 my-1">
               {downloadLoading && (
                 <div className="flex flex-col items-center justify-center py-12 gap-3">
                   <Loader2 className="w-8 h-8 text-emerald-500 animate-spin" />

@@ -2,12 +2,14 @@
 
 import React, { useMemo, useEffect, useState } from "react";
 import Link from "next/link";
+import Image from "next/image";
 import { useRouter } from "next/navigation";
 import { Calendar, Clock, Tv, Settings, Heart, Award } from "lucide-react";
 import { useAuthStore } from "@/store/authStore";
 import { useAnime } from "@/hooks/useAnime";
 import { Button } from "@/components/ui/Button";
 import AnimeCard from "@/components/anime/AnimeCard";
+import { getHistoryKey } from "@/lib/historyKey";
 
 interface HistoryItem {
   malId: string;
@@ -17,10 +19,11 @@ interface HistoryItem {
   watchedAt: number;
 }
 
-// Ambil history dari localStorage
-function getWatchHistory(): HistoryItem[] {
+// Ambil history dari localStorage (per-user)
+function getWatchHistory(userId?: string | null): HistoryItem[] {
   try {
-    return JSON.parse(localStorage.getItem("watch-history") ?? "[]");
+    const key = getHistoryKey(userId)
+    return JSON.parse(localStorage.getItem(key) ?? "[]");
   } catch {
     return [];
   }
@@ -64,14 +67,14 @@ export default function ProfilePage() {
     if (!isAuthenticated || !user) router.push("/login");
   }, [isAuthenticated, user, router]);
 
-  // Hitung stats dari localStorage history
+  // Hitung stats dari localStorage history (per user)
   useEffect(() => {
-    const history = getWatchHistory();
+    const history = getWatchHistory(user?.id);
     setEpisodesWatched(history.length);
     // Estimasi: 1 episode = 24 menit
     const totalMins = history.length * 24;
     setHoursWatched((totalMins / 60).toFixed(1));
-  }, []);
+  }, [user?.id]);
 
   const levelInfo = useMemo(() => getLevelInfo(episodesWatched), [episodesWatched]);
 
@@ -94,9 +97,11 @@ export default function ProfilePage() {
         <div className="flex flex-col md:flex-row items-center gap-6 z-10 text-center md:text-left">
           {/* Avatar — foto atau inisial */}
           {user.avatar ? (
-            <img
+            <Image
               src={user.avatar}
               alt={user.name}
+              width={96}
+              height={96}
               className="w-24 h-24 rounded-full object-cover border-2 border-accent shadow-lg shrink-0"
             />
           ) : (

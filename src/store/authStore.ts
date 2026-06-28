@@ -26,6 +26,7 @@ interface AuthState {
   watchlist: WatchlistItem[];
   history: HistoryItem[];
   isAuthenticated: boolean;
+  isAuthLoading: boolean;
   login: (email: string, password?: string) => Promise<{ role: "user" | "admin" }>;
   register: (name: string, email: string, password?: string) => Promise<void>;
   loginWithGoogle: () => Promise<{ role: "user" | "admin" }>;
@@ -41,10 +42,6 @@ interface AuthState {
   ) => Promise<void>;
 }
 
-// Helper: sync cookie untuk middleware & server-side auth guard.
-// PENTING: isinya sekarang ID token Firebase ASLI (bukan flag "1" lagi),
-// soalnya middleware.ts & admin layout butuh token yang bisa diverifikasi
-// pakai firebase-admin.verifyIdToken() di server.
 function setAuthCookie(idToken: string) {
   if (typeof document !== "undefined") {
     document.cookie = `auth-storage=${idToken}; path=/; max-age=${60 * 60 * 24 * 7}; SameSite=Lax`;
@@ -57,7 +54,6 @@ function clearAuthCookie() {
   }
 }
 
-// Variabel untuk menampung fungsi unsubscribe snapshot listener
 let unsubscribeWatchlist: (() => void) | null = null;
 let unsubscribeHistory: (() => void) | null = null;
 let unsubscribeProfile: (() => void) | null = null;
@@ -84,16 +80,16 @@ export const useAuthStore = create<AuthState>()(
       watchlist: [],
       history: [],
       isAuthenticated: false,
+      isAuthLoading: true,
 
       login: async (email, password = "") => {
         try {
           const credential = await signInWithEmailAndPassword(auth, email, password);
           setAuthCookie(await credential.user.getIdToken());
 
-          // Ambil role asli dari Firestore — sama prinsipnya kayak loginWithGoogle,
-          // jangan whitelist field role mentah tanpa dicek.
           const userDoc = await getDoc(doc(db, "users", credential.user.uid));
-          const role: "user" | "admin" = userDoc.exists() && userDoc.data()?.role === "admin" ? "admin" : "user";
+          const role: "user" | "admin" =
+            userDoc.exists() && userDoc.data()?.role === "admin" ? "admin" : "user";
 
           return { role };
         } catch (error: any) {
@@ -107,12 +103,8 @@ export const useAuthStore = create<AuthState>()(
           const userCredential = await createUserWithEmailAndPassword(auth, email, password);
           const fUser = userCredential.user;
 
-          // Update display name di Firebase Auth
           await firebaseUpdateProfile(fUser, { displayName: name });
 
-          // Buat profil Firestore — role WAJIB hardcode "user" di sini.
-          // Security Rules juga ngecek ini ulang di server, jadi dobel aman:
-          // client gak bisa daftar langsung jadi admin walau payload diubah manual.
           const userDocRef = doc(db, "users", fUser.uid);
           const profileData = {
             id: fUser.uid,
@@ -140,14 +132,12 @@ export const useAuthStore = create<AuthState>()(
           const userCredential = await signInWithPopup(auth, provider);
           const fUser = userCredential.user;
 
-          // Cek apakah data user sudah ada di Firestore
           const userDocRef = doc(db, "users", fUser.uid);
           const userDoc = await getDoc(userDocRef);
 
           let role: "user" | "admin" = "user";
 
           if (!userDoc.exists()) {
-            // Buat profil default jika baru pertama kali — role tetap "user"
             const profileData = {
               id: fUser.uid,
               name: fUser.displayName || fUser.email?.split("@")[0] || "Otaku",
@@ -162,10 +152,7 @@ export const useAuthStore = create<AuthState>()(
               episodesCount: 0,
             };
             await setDoc(userDocRef, profileData);
-            // role udah "user", gak perlu diubah
           } else {
-            // User lama — ambil role asli dari Firestore, jangan percaya
-            // field mentah tanpa whitelist (sama kayak prinsip di onIdTokenChanged).
             role = userDoc.data()?.role === "admin" ? "admin" : "user";
           }
 
@@ -181,13 +168,16 @@ export const useAuthStore = create<AuthState>()(
         try {
           clearAuthCookie();
           clearListeners();
+          currentUserId = null;
           await signOut(auth);
           set({
             isAuthenticated: false,
             user: null,
             watchlist: [],
             history: [],
+            isAuthLoading: false,
           });
+          useAuthStore.persist.clearStorage();
         } catch (error: any) {
           console.error("Logout error:", error);
           throw error;
@@ -247,7 +237,6 @@ export const useAuthStore = create<AuthState>()(
             watchedAt: new Date().toISOString(),
           });
 
-          // Jika progres sudah di atas 90% dan baru pertama kali selesai, update stats
           if (progress > 90) {
             const isCompleted = get().history.some(
               (h) => h.animeId === animeId && h.episodeId === episodeId && h.progress > 90
@@ -268,9 +257,6 @@ export const useAuthStore = create<AuthState>()(
     {
       name: "animesya-auth",
       version: 2,
-      // Hanya persist user & isAuthenticated — watchlist & history selalu
-      // fresh dari Firestore (onSnapshot), tidak perlu disimpan di localStorage.
-      // Ini mencegah data akun lama bocor ke akun baru.
       partialize: (state) => ({
         user: state.user,
         isAuthenticated: state.isAuthenticated,
@@ -279,61 +265,76 @@ export const useAuthStore = create<AuthState>()(
   )
 );
 
-// Jalankan Auth State Listener secara global.
-// Pakai onIdTokenChanged (bukan onAuthStateChanged) karena ini juga fire
-// setiap kali Firebase SDK auto-refresh ID token di background (tiap ~1 jam),
-// jadi cookie selalu berisi token yang masih valid tanpa perlu logic refresh manual.
+let currentUserId: string | null = null;
+
 if (typeof window !== "undefined") {
   onIdTokenChanged(auth, async (firebaseUser) => {
     if (firebaseUser) {
+      const isNewUser = currentUserId !== firebaseUser.uid;
+
+      if (isNewUser) {
+        // ✅ 1. Stop listener lama DULU biar gak bisa fire lagi
+        clearListeners();
+
+        // ✅ 2. Baru reset state — aman karena listener lama udah mati
+        useAuthStore.setState({
+          user: null,
+          watchlist: [],
+          history: [],
+          isAuthenticated: false,
+          isAuthLoading: true,
+        });
+
+        currentUserId = firebaseUser.uid;
+      }
+
       setAuthCookie(await firebaseUser.getIdToken());
 
-      // Hapus listener lama jika ada (cegah listener dobel saat token refresh)
-      clearListeners();
-
-      // 1. Dapatkan dan Dengarkan Profil User
-      const userDocRef = doc(db, "users", firebaseUser.uid);
-      unsubscribeProfile = onSnapshot(userDocRef, (docSnap) => {
-        if (docSnap.exists()) {
-          const data = docSnap.data();
-          useAuthStore.setState({
-            isAuthenticated: true,
-            user: {
-              id: firebaseUser.uid,
-              name: data.name || firebaseUser.displayName || "User",
-              email: data.email || firebaseUser.email || "",
-              avatar: data.avatar || firebaseUser.photoURL || undefined,
-              joinedAt: data.joinedAt || "Jun 2025",
-              watchTime: data.watchTime || 0,
-              episodesCount: data.episodesCount || 0,
-              // Default ke "user" kalau field gak ada / bukan "admin" yang valid —
-              // jangan pernah percaya field role mentah dari Firestore tanpa whitelist.
-              role: data.role === "admin" ? "admin" : "user",
-            },
-          });
-        }
-      });
-
-      // 2. Dengarkan Watchlist Collection
-      const watchlistColRef = collection(db, "users", firebaseUser.uid, "watchlist");
-      unsubscribeWatchlist = onSnapshot(watchlistColRef, (snapshot) => {
-        const list: WatchlistItem[] = [];
-        snapshot.forEach((d) => {
-          list.push(d.data() as WatchlistItem);
+      // ✅ 3. Setup listener baru hanya kalau user beneran ganti
+      //    Skip kalau cuma token refresh tiap ~1 jam
+      if (isNewUser) {
+        const userDocRef = doc(db, "users", firebaseUser.uid);
+        unsubscribeProfile = onSnapshot(userDocRef, (docSnap) => {
+          if (docSnap.exists()) {
+            const data = docSnap.data();
+            useAuthStore.setState({
+              isAuthenticated: true,
+              isAuthLoading: false,
+              user: {
+                id: firebaseUser.uid,
+                name: data.name || firebaseUser.displayName || "User",
+                email: data.email || firebaseUser.email || "",
+                avatar: data.avatar || firebaseUser.photoURL || undefined,
+                joinedAt: data.joinedAt || "Jun 2025",
+                watchTime: data.watchTime || 0,
+                episodesCount: data.episodesCount || 0,
+                role: data.role === "admin" ? "admin" : "user",
+              },
+            });
+          } else {
+            useAuthStore.setState({ isAuthLoading: false });
+          }
         });
-        useAuthStore.setState({ watchlist: list });
-      });
 
-      // 3. Dengarkan History Collection
-      const historyColRef = collection(db, "users", firebaseUser.uid, "history");
-      unsubscribeHistory = onSnapshot(historyColRef, (snapshot) => {
-        const list: HistoryItem[] = [];
-        snapshot.forEach((d) => {
-          list.push(d.data() as HistoryItem);
+        const watchlistColRef = collection(db, "users", firebaseUser.uid, "watchlist");
+        unsubscribeWatchlist = onSnapshot(watchlistColRef, (snapshot) => {
+          const list: WatchlistItem[] = [];
+          snapshot.forEach((d) => list.push(d.data() as WatchlistItem));
+          useAuthStore.setState({ watchlist: list });
         });
-        useAuthStore.setState({ history: list });
-      });
+
+        const historyColRef = collection(db, "users", firebaseUser.uid, "history");
+        unsubscribeHistory = onSnapshot(historyColRef, (snapshot) => {
+          const list: HistoryItem[] = [];
+          snapshot.forEach((d) => list.push(d.data() as HistoryItem));
+          useAuthStore.setState({ history: list });
+        });
+      } else {
+        // Jika token doang yang terefresh, loading sudah pasti false
+        useAuthStore.setState({ isAuthLoading: false });
+      }
     } else {
+      currentUserId = null;
       clearAuthCookie();
       clearListeners();
       useAuthStore.setState({
@@ -341,6 +342,7 @@ if (typeof window !== "undefined") {
         user: null,
         watchlist: [],
         history: [],
+        isAuthLoading: false,
       });
     }
   });

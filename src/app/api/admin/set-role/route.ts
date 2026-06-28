@@ -1,8 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
-import { adminAuth, adminDb } from "@/lib/firebase-admin";
+import { getAdminAuth, getAdminDb } from "@/lib/firebase-admin";
 
 export async function POST(request: NextRequest) {
   try {
+    // Getter dipanggil di sini (dalam handler), bukan di top-level module,
+    // jadi Firebase Admin baru ke-init pas request beneran masuk.
+    const adminAuth = getAdminAuth();
+    const adminDb = getAdminDb();
+
     // 1. Extract Bearer token from Authorization header
     const authHeader = request.headers.get("Authorization");
     if (!authHeader?.startsWith("Bearer ")) {

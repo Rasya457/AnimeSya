@@ -173,5 +173,10 @@ export async function GET(
     statusMessage: 'OK',
     data:          anime,
     pagination:    null,
+  }, {
+    headers: {
+      // Detail anime jarang berubah — cache 1 jam, stale 24 jam
+      'Cache-Control': 'public, s-maxage=3600, stale-while-revalidate=86400',
+    },
   })
 }

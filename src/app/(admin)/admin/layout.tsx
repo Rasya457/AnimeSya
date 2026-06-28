@@ -17,7 +17,7 @@
  */
 import { redirect } from "next/navigation";
 import { cookies } from "next/headers";
-import { adminAuth, adminDb } from "@/lib/firebase-admin";
+import { getAdminAuth, getAdminDb } from "@/lib/firebase-admin";
 import AdminSidebar from "@/components/admin/AdminSidebar";
 
 export const dynamic = "force-dynamic";
@@ -27,6 +27,11 @@ interface AdminLayoutProps {
 }
 
 export default async function AdminLayout({ children }: AdminLayoutProps) {
+  // Getter dipanggil di dalam component (per-request render),
+  // bukan di top-level module, jadi gak ke-eksekusi pas build/page-data-collection.
+  const adminAuth = getAdminAuth();
+  const adminDb = getAdminDb();
+
   const cookieStore = await cookies();
   const raw = cookieStore.get("auth-storage")?.value;
 

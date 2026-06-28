@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect } from "react";
 import Link from "next/link";
+import Image from "next/image";
 import { usePathname, useRouter } from "next/navigation";
 import { Search, User, LogOut, Heart, History, Settings, ChevronDown } from "lucide-react";
 import { useAuthStore } from "@/store/authStore";
@@ -11,7 +12,7 @@ import { motion, AnimatePresence } from "framer-motion";
 export const Navbar: React.FC = () => {
   const pathname = usePathname();
   const router = useRouter();
-  const { user, isAuthenticated, logout } = useAuthStore();
+  const { user, isAuthenticated, isAuthLoading, logout } = useAuthStore();
   const [searchQuery, setSearchQuery] = useState("");
   const [dropdownOpen, setDropdownOpen] = useState(false);
 
@@ -73,16 +74,20 @@ export const Navbar: React.FC = () => {
 
       {/* Right User Actions */}
       <div className="flex items-center gap-4">
-        {isAuthenticated && user ? (
+        {isAuthLoading ? (
+          <div className="w-9 h-9 rounded-full bg-zinc-800/60 animate-pulse border border-zinc-800" />
+        ) : isAuthenticated && user ? (
           <div className="relative" onClick={(e) => e.stopPropagation()}>
             <button
               onClick={() => setDropdownOpen(!dropdownOpen)}
               className="flex items-center gap-2 focus:outline-none cursor-pointer group"
             >
               {user.avatar ? (
-                <img
+                <Image
                   src={user.avatar}
                   alt={user.name}
+                  width={36}
+                  height={36}
                   className="w-9 h-9 rounded-full object-cover border border-zinc-800 group-hover:border-accent transition-colors"
                 />
               ) : (

@@ -9,6 +9,7 @@ import { useAuthStore } from '@/store/authStore'
 import { Badge } from '@/components/ui/Badge'
 import AnimeRow from '@/components/anime/AnimeRow'
 import type { AnimeListItem } from '@/types/anime'
+import { getHistoryKey } from '@/lib/historyKey'
 
 // ─── Shared ───────────────────────────────────────────────────────────────────
 
@@ -17,7 +18,7 @@ const SCROLL_BTN =
   'flex items-center justify-center text-zinc-400 ' +
   'hover:text-white hover:border-zinc-600 transition-all active:scale-90'
 
-const HISTORY_KEY = 'watch-history'
+const HISTORY_KEY_BASE = 'watch-history' // tidak dipakai langsung — pakai getHistoryKey()
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -34,7 +35,9 @@ export interface HistoryItem {
 
 // ─── addToHistory ─────────────────────────────────────────────────────────────
 
-export function addToHistory(entry: HistoryItem) {
+// addToHistory sekarang butuh userId supaya history tersimpan per-akun
+function addToHistory(entry: HistoryItem, userId?: string | null) {
+  const HISTORY_KEY = getHistoryKey(userId)
   try {
     const prev: HistoryItem[] = JSON.parse(localStorage.getItem(HISTORY_KEY) ?? '[]')
     const existing    = prev.find(e => e.malId === entry.malId)
@@ -87,12 +90,14 @@ function useDragScroll(scrollPx = 320) {
 
 // ─── useWatchHistory ──────────────────────────────────────────────────────────
 
-function useWatchHistory() {
+// useWatchHistory — baca/tulis history per user
+function useWatchHistory(userId?: string | null) {
   const [history, setHistory] = useState<HistoryItem[]>([])
 
   useEffect(() => {
+    const key = getHistoryKey(userId)
     try {
-      const raw = localStorage.getItem(HISTORY_KEY)
+      const raw = localStorage.getItem(key)
       if (!raw) { setHistory([]); return }
       const parsed: HistoryItem[] = JSON.parse(raw)
       const grouped = new Map<string, HistoryItem>()
@@ -113,27 +118,34 @@ function useWatchHistory() {
         }
       }
       const deduped = Array.from(grouped.values()).sort((a, b) => b.watchedAt - a.watchedAt)
-      localStorage.setItem(HISTORY_KEY, JSON.stringify(deduped))
+      localStorage.setItem(key, JSON.stringify(deduped))
       setHistory(deduped)
     } catch { }
-  }, [])
+  }, [userId])
 
   useEffect(() => {
+    const key = getHistoryKey(userId)
     const sync = (e: StorageEvent) => {
-      if (e.key !== HISTORY_KEY) return
+      if (e.key !== key) return
       try { setHistory(e.newValue ? JSON.parse(e.newValue) : []) } catch { }
     }
     window.addEventListener('storage', sync)
     return () => window.removeEventListener('storage', sync)
-  }, [])
+  }, [userId])
 
-  const clear  = useCallback(() => { localStorage.removeItem(HISTORY_KEY); setHistory([]) }, [])
+  const clear  = useCallback(() => {
+    const key = getHistoryKey(userId)
+    localStorage.removeItem(key)
+    setHistory([])
+  }, [userId])
+
   const remove = useCallback((malId: string) => {
-    const next = (JSON.parse(localStorage.getItem(HISTORY_KEY) ?? '[]') as HistoryItem[])
+    const key = getHistoryKey(userId)
+    const next = (JSON.parse(localStorage.getItem(key) ?? '[]') as HistoryItem[])
       .filter(h => h.malId !== malId)
-    localStorage.setItem(HISTORY_KEY, JSON.stringify(next))
+    localStorage.setItem(key, JSON.stringify(next))
     setHistory(next)
-  }, [])
+  }, [userId])
 
   return { history, clear, remove }
 }
@@ -143,7 +155,7 @@ function useWatchHistory() {
 export default function HomePage() {
   const { ongoing, completed, animeList, hero, loading, error } = useAnime()
   const { user } = useAuthStore()
-  const { history, clear, remove } = useWatchHistory()
+  const { history, clear, remove } = useWatchHistory(user?.id)
 
   const heroList: AnimeListItem[] = ongoing.slice(0, 6)
   const [heroIdx,    setHeroIdx]    = useState(0)

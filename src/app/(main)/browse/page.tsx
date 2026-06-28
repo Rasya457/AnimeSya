@@ -131,7 +131,7 @@ export default function BrowsePage() {
         {!query && allGenres.length > 0 && (
           <div className="flex flex-col gap-2">
             <span className="text-[10px] font-bold text-zinc-500 uppercase tracking-wider">Genres</span>
-            <div className="flex items-center gap-2 overflow-x-auto scrollbar-hide pb-1.5">
+            <div data-lenis-prevent className="flex items-center gap-2 overflow-x-auto scrollbar-hide pb-1.5">
               {["All", ...allGenres].map((g) => (
                 <button key={g} onClick={() => setSelectedGenre(g)}
                   className={`px-4 py-1.5 rounded-full text-xs font-bold border shrink-0 transition-colors cursor-pointer ${

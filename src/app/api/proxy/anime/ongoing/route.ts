@@ -4,7 +4,7 @@ const BASE = 'https://wajik-anime-api.vercel.app/otakudesu'
 
 export async function GET(req: NextRequest) {
   try {
-    const res  = await fetch(`${BASE}/home`)
+    const res  = await fetch(`${BASE}/home`, { next: { revalidate: 300 } })
     const json = await res.json()
 
     // Log supaya kelihatan shape-nya
@@ -17,7 +17,12 @@ export async function GET(req: NextRequest) {
       json?.data?.ongoing ??
       []
 
-    return NextResponse.json({ success: true, data })
+    return NextResponse.json({ success: true, data }, {
+      headers: {
+        // Cache di Vercel Edge 5 menit, stale 10 menit
+        'Cache-Control': 'public, s-maxage=300, stale-while-revalidate=600',
+      },
+    })
   } catch (e) {
     console.error('[proxy/ongoing]', e)
     return NextResponse.json({ success: false, data: [] }, { status: 500 })

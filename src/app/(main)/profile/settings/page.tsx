@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
+import Image from "next/image";
 import { Settings, User, Sliders, LogOut, Check, ArrowLeft, Camera, X } from "lucide-react";
 import { useAuthStore } from "@/store/authStore";
 import { usePlayerStore } from "@/store/playerStore";
@@ -102,9 +103,11 @@ export default function SettingsPage() {
               <div className="relative w-16 h-16 flex-shrink-0">
                 {avatar ? (
                   <>
-                    <img
+                    <Image
                       src={avatar}
                       alt="Avatar"
+                      width={64}
+                      height={64}
                       className="w-16 h-16 rounded-full object-cover border border-zinc-700"
                     />
                     {/* Remove button */}

@@ -28,7 +28,7 @@ export default function SmoothScrollProvider({ children }: SmoothScrollProviderP
       // gampang dikontrol "berapa lama" scroll selesai, dan kurva ini
       // (1.001 - 2^-10t) ngasih efek decel ala-iOS yang kerasa snappy
       // tapi tetep mulus, bukan lambat kayak lerp rendah.
-      duration: 1.2,
+      duration: 0.8,
       easing: (t: number) => Math.min(1, 1.001 - Math.pow(2, -10 * t)),
       smoothWheel: true,
     }),
