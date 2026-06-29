@@ -44,13 +44,15 @@ interface AuthState {
 
 function setAuthCookie(idToken: string) {
   if (typeof document !== "undefined") {
-    document.cookie = `auth-storage=${idToken}; path=/; max-age=${60 * 60 * 24 * 7}; SameSite=Lax`;
+    const secure = window.location.protocol === "https:" ? "; Secure" : "";
+    document.cookie = `auth-storage=${idToken}; path=/; max-age=${60 * 60 * 24 * 7}; SameSite=Lax${secure}`;
   }
 }
 
 function clearAuthCookie() {
   if (typeof document !== "undefined") {
-    document.cookie = "auth-storage=; path=/; max-age=0";
+    const secure = window.location.protocol === "https:" ? "; Secure" : "";
+    document.cookie = `auth-storage=; path=/; max-age=0; SameSite=Lax${secure}`;
   }
 }
 
@@ -129,6 +131,20 @@ export const useAuthStore = create<AuthState>()(
       loginWithGoogle: async () => {
         try {
           const provider = new GoogleAuthProvider();
+          
+          const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(
+            navigator.userAgent
+          );
+
+          if (isMobile) {
+            const { signInWithRedirect } = await import("firebase/auth");
+            // Set loading state to prevent flickering
+            useAuthStore.setState({ isAuthLoading: true });
+            await signInWithRedirect(auth, provider);
+            // Function ends here because page will redirect
+            return { role: "user" as const };
+          }
+
           const userCredential = await signInWithPopup(auth, provider);
           const fUser = userCredential.user;
 
@@ -159,7 +175,7 @@ export const useAuthStore = create<AuthState>()(
           setAuthCookie(await fUser.getIdToken());
           return { role };
         } catch (error: any) {
-          console.error("Google Login error:", error);
+          console.error("Google login error:", error);
           throw error;
         }
       },
@@ -268,6 +284,39 @@ export const useAuthStore = create<AuthState>()(
 let currentUserId: string | null = null;
 
 if (typeof window !== "undefined") {
+  // Handle redirect sign-in result on mount (for mobile flow)
+  import("firebase/auth").then(({ getRedirectResult }) => {
+    getRedirectResult(auth)
+      .then(async (result) => {
+        if (result) {
+          const fUser = result.user;
+          const userDocRef = doc(db, "users", fUser.uid);
+          const userDoc = await getDoc(userDocRef);
+          
+          if (!userDoc.exists()) {
+            const profileData = {
+              id: fUser.uid,
+              name: fUser.displayName || fUser.email?.split("@")[0] || "Otaku",
+              email: fUser.email || "",
+              avatar: fUser.photoURL || undefined,
+              role: "user" as const,
+              joinedAt: new Date().toLocaleDateString("en-US", {
+                month: "short",
+                year: "numeric",
+              }),
+              watchTime: 0,
+              episodesCount: 0,
+            };
+            await setDoc(userDocRef, profileData);
+          }
+          setAuthCookie(await fUser.getIdToken());
+        }
+      })
+      .catch((error) => {
+        console.error("Error handling Google redirect login:", error);
+      });
+  });
+
   onIdTokenChanged(auth, async (firebaseUser) => {
     if (firebaseUser) {
       const isNewUser = currentUserId !== firebaseUser.uid;

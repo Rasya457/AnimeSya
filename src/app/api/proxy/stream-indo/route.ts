@@ -1,4 +1,16 @@
 // app/api/proxy/stream-indo/route.ts
+// v9 — Sokuja overhaul (App Router, gak punya __NEXT_DATA__ klasik):
+//      1. video-mirrors: hit API /api/video-mirrors/?e={episodeId} langsung
+//         buat direct MP4 per quality (sampai 1080p) drpd regex/RSC-scan HTML.
+//         episodeId di-extract dari "episodeId":N di RSC payload halaman episode.
+//      2. search: cleanSokujCardTitle() strip rank-badge ("10Dr. Stone...") +
+//         type-badge ("...Part 3TV") yang nempel tanpa spasi di title hasil
+//         scrape — junk ini bikin titleSimilarity gagal lolos threshold 0.45
+//         walau anime-nya beneran match.
+//      3. episode list: ganti primer dari scrape <a href> di seluruh halaman
+//         anime (ternyata nyangkut widget rekomendasi anime LAIN + salah nomor
+//         episode) ke API /api/playlist/?slug={episode-1 slug guess} yang
+//         scoped bener ke anime itu doang.
 // v8 — Direct-URL extraction race no longer blindly falls back to the
 //      top-scored host (desustream) when it's confirmed dead (e.g. Cloudflare
 //      526 from a broken origin cert). Now tracks which extractable hosts
@@ -2176,7 +2188,538 @@ const nontonanimeidAdapter: SourceAdapter = {
     resolveStream: nontonResolveStream,
 }
 
-const SOURCE_ADAPTERS: SourceAdapter[] = [otakudesuAdapter, nontonanimeidAdapter]
+// ═══════════════════════════════════════════════════════════════════════════
+// Sokuja adapter  (sokuja.net)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Sokuja adalah situs anime Indo paling stabil per 2026 — domain tunggal
+// sokuja.net tidak pernah berganti, tanpa iklan judi, kualitas hingga 1080p.
+//
+// ⚠️  PENTING: Sokuja adalah Next.js app (bukan WordPress), dikonfirmasi dari
+//     live fetch — HTML mengandung /_next/static/chunks, bukan WP assets.
+//     Implikasinya:
+//       • Data halaman ada di <script id="__NEXT_DATA__"> sebagai JSON blob
+//         (Next.js inject semua pageProps di sini sebelum client hydration)
+//       • Tidak ada JW Player / video.js config inline di HTML mentah —
+//         player load via JS chunks
+//       • Selector WordPress (AnimeStream/Tsun theme) tidak berlaku
+//
+// Struktur URL dikonfirmasi dari live fetch + Telegram channel (@sokuja):
+//   - Search     : {base}/?s={query}
+//   - Anime info : {base}/anime/{anime-slug}-subtitle-indonesia/
+//   - Episode    : {base}/{anime-slug}-episode-{num}-subtitle-indonesia/
+//
+// Strategi ekstraksi video (urutan prioritas, confirmed 29 Jun 2026):
+//   1. API {base}/api/video-mirrors/?e={episodeId} → direct MP4 per quality
+//      (480p/720p/1080p), gak butuh Referer khusus. episodeId di-extract dari
+//      "episodeId":N yang ke-embed di RSC payload halaman episode (lihat
+//      extractEpisodeId()).
+//   2. Fallback: parse __NEXT_DATA__-style data / regex scan HTML cari mp4/m3u8
+//   3. Fallback: iframe embed kalau host dikenal bisa di-extract
+//
+// Mirror: x5.sokuja.uk (tercepat 247ms dari health check), sokuja.net (390ms)
+// Set env SOKUJA_BASE kalau mau override domain utama.
+
+const SOKUJA_MIRRORS: readonly string[] = [
+    process.env.SOKUJA_BASE ?? 'https://x5.sokuja.uk',  // 247ms — tercepat
+    'https://sokuja.net',                                 // 390ms — domain utama
+    'https://x3.sokuja.uk',                              // 4.5s  — last resort
+]
+
+async function sokujFetchHtml(url: string): Promise<string> {
+    return fetchSingleUrl(url)
+}
+
+// ── __NEXT_DATA__ parser ─────────────────────────────────────────────────────
+// Next.js inject seluruh pageProps sebagai JSON di <script id="__NEXT_DATA__">.
+// Ini satu-satunya cara dapetin data dari Sokuja tanpa nge-run JS-nya.
+function parseNextData(html: string): Record<string, any> | null {
+    try {
+        const match = html.match(/<script\s+id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/)
+        if (!match) return null
+        return JSON.parse(match[1])
+    } catch {
+        return null
+    }
+}
+
+// Rekursif collect semua string values dari nested object yang kelihatan kayak
+// URL video (mp4/m3u8) atau URL anime/episode. Pakai ini buat mining __NEXT_DATA__.
+function collectFromObj(obj: any, target: 'video' | 'anime' | 'episode', depth = 0): string[] {
+    if (depth > 8 || !obj || typeof obj !== 'object') return []
+    const out: string[] = []
+    for (const [k, v] of Object.entries(obj)) {
+        if (typeof v === 'string') {
+            if (target === 'video' && /\.(?:mp4|m3u8)(?:[?#]|$)/i.test(v)) {
+                out.push(v.startsWith('//') ? `https:${v}` : v)
+            } else if (target === 'anime' && /\/anime\/[^/]+/.test(v)) {
+                out.push(v)
+            } else if (target === 'episode' && /-episode-\d+/i.test(v) && !/^\/anime\//.test(v)) {
+                out.push(v)
+            }
+        } else if (Array.isArray(v)) {
+            for (const item of v) out.push(...collectFromObj(item, target, depth + 1))
+        } else if (v && typeof v === 'object') {
+            out.push(...collectFromObj(v, target, depth + 1))
+        }
+    }
+    return out
+}
+
+// Sokuja search-card title kadang ke-scrape kotor: rank-badge nempel di
+// depan ("10Dr. Stone...") dan type-badge ("TV"/"Movie"/dst) nempel di
+// belakang ("...Part 3TV"), tanpa spasi — karena cheerio .text() ngegabung
+// semua child text node (badge + judul) tanpa separator. Confirmed dari live
+// search result per 29 Jun 2026. Junk ini ngerusak titleSimilarity scoring
+// di resolveStreamMultiSource (token "10dr"/"3tv" gak match sama "dr"/"3"
+// dari query, nge-inflate union tanpa nambah intersection) — bisa bikin
+// match yang sebenernya bener malah gagal lolos CROSS_SOURCE_TITLE_THRESHOLD.
+function cleanSokujCardTitle(raw: string): string {
+    return raw
+        .replace(/^\d{1,3}(?=[A-Za-z])/, '')                  // rank badge nempel di depan
+        .replace(/(?<=\S)(TV|Movie|OVA|ONA|Special)$/i, '')   // type badge nempel di belakang
+        .trim()
+}
+
+// ── Search ───────────────────────────────────────────────────────────────────
+async function sokujSearch(query: string): Promise<SearchResult[]> {
+    const cacheKey = `sokuja-search:${query.toLowerCase()}`
+    const cached = cacheGet<SearchResult[]>(cacheKey)
+    if (cached) return cached
+
+    for (const base of SOKUJA_MIRRORS) {
+        try {
+            const html = await sokujFetchHtml(`${base}/?s=${encodeURIComponent(query)}`)
+            const $ = cheerio.load(html)
+            const seen = new Set<string>()
+            const results: SearchResult[] = []
+
+            const pushResult = (href: string, title: string, thumb: string) => {
+                const norm = href.split('?')[0].replace(/\/$/, '') + '/'
+                if (seen.has(norm) || !title) return
+                seen.add(norm)
+                results.push({ title: cleanOtakuTitle(cleanSokujCardTitle(title)), url: norm, thumb })
+            }
+
+            // Primer: Next.js __NEXT_DATA__ — paling reliable kalau ada
+            const nextData = parseNextData(html)
+            if (nextData) {
+                const animeUrls = collectFromObj(nextData.props, 'anime')
+                // Next.js biasanya simpan title di props.pageProps.posts[].title dst
+                // Coba extract dari semua object yang punya title + slug/link
+                const tryExtractAnime = (obj: any, d = 0): void => {
+                    if (d > 6 || !obj || typeof obj !== 'object') return
+                    // Kalau object punya title + (link|slug|href|url) → kemungkinan besar anime card
+                    const title = obj.title || obj.name || obj.post_title
+                    const link = obj.link || obj.slug || obj.href || obj.url || obj.permalink
+                    if (title && link && typeof title === 'string' && typeof link === 'string') {
+                        if (/\/anime\//.test(link)) {
+                            const fullHref = link.startsWith('http') ? link : `${base}${link}`
+                            const thumb = obj.thumbnail || obj.image || obj.cover || obj.poster || ''
+                            pushResult(fullHref, title, thumb)
+                        }
+                    }
+                    for (const v of Object.values(obj)) {
+                        if (Array.isArray(v)) v.forEach(i => tryExtractAnime(i, d + 1))
+                        else if (v && typeof v === 'object') tryExtractAnime(v, d + 1)
+                    }
+                }
+                tryExtractAnime(nextData.props)
+            }
+
+            // Fallback: scan rendered HTML — Sokuja SSR-render card, jadi <a href="/anime/...">
+            // biasanya sudah ada di HTML meskipun theme-nya Next.js custom
+            if (results.length === 0) {
+                $('a[href*="/anime/"]').each((_, el) => {
+                    const a = $(el)
+                    const href = (a.attr('href') ?? '').split('?')[0]
+                    if (!/\/anime\/[^/]+/.test(href)) return
+                    const full = href.startsWith('http') ? href : `${base}${href}`
+                    const title = (
+                        a.attr('title') ||
+                        a.attr('aria-label') ||
+                        a.find('h1,h2,h3,h4,[class*="title"],[class*="name"]').first().text() ||
+                        a.text()
+                    ).trim()
+                    const thumb = a.find('img').attr('src') ?? a.find('img').attr('data-src') ?? ''
+                    pushResult(full, title, thumb)
+                })
+            }
+
+            if (results.length > 0) {
+                cacheSet(cacheKey, results, 10 * 60 * 1000)
+                return results
+            }
+        } catch { /* coba mirror berikutnya */ }
+    }
+    return []
+}
+
+// ── Episode list ─────────────────────────────────────────────────────────────
+// ── Episode list via API playlist ───────────────────────────────────────────
+// API {base}/api/playlist/?slug={episode_slug} balikin SEMUA episode anime
+// yang punya episode itu (currentSlug cuma echo, gak ngaruh ke isi array),
+// jadi episode-1 dipakai sebagai "kunci" buat dapetin full list-nya tanpa
+// perlu udah punya slug episode yang asli.
+interface SokujPlaylistEpisode { slug: string; episodeNumber: string }
+interface SokujPlaylistResponse { currentSlug: string; episodes: SokujPlaylistEpisode[] }
+
+// "/anime/dr-stone-...-subtitle-indonesia/" → "dr-stone-...-episode-1-subtitle-indonesia"
+function animeSlugToEpisodeSlugGuess(animeUrl: string, episodeNum: number): string | null {
+    try {
+        const path = new URL(animeUrl).pathname
+        const m = path.match(/^\/anime\/(.+?)-subtitle-indonesia\/?$/)
+        if (!m) return null
+        return `${m[1]}-episode-${episodeNum}-subtitle-indonesia`
+    } catch {
+        return null
+    }
+}
+
+async function sokujPlaylist(episodeSlug: string): Promise<SokujPlaylistResponse | null> {
+    const cacheKey = `sokuja-playlist:${episodeSlug}`
+    const cached = cacheGet<SokujPlaylistResponse>(cacheKey)
+    if (cached) return cached
+
+    for (const base of SOKUJA_MIRRORS) {
+        try {
+            const res = await withTimeout(
+                fetch(`${base}/api/playlist/?slug=${encodeURIComponent(episodeSlug)}`, {
+                    headers: { ...HTML_HDRS, Accept: 'application/json' },
+                    cache: 'no-store',
+                }),
+                5_000,
+            )
+            if (!res.ok) continue
+            const json = await res.json() as SokujPlaylistResponse
+            if (json?.episodes?.length > 0) {
+                cacheSet(cacheKey, json, 10 * 60 * 1000)
+                return json
+            }
+        } catch { /* coba mirror berikutnya */ }
+    }
+    return null
+}
+
+// ── Episode list ─────────────────────────────────────────────────────────────
+async function sokujEpisodes(animeUrl: string): Promise<EpisodeEntry[]> {
+    const cacheKey = `sokuja-eps:${extractSlug(animeUrl)}`
+    const cached = cacheGet<EpisodeEntry[]>(cacheKey)
+    if (cached) return cached
+
+    const base = (() => { try { return new URL(animeUrl).origin } catch { return SOKUJA_MIRRORS[0] } })()
+
+    // Primer: API playlist — scoped ke anime ini doang, gak kayak scrape
+    // <a href> di seluruh halaman yang ternyata nyangkut widget rekomendasi
+    // anime LAIN (confirmed dari live test 29 Jun 2026: hasil scrape lama
+    // kebawa episode anime lain + salah nomor episode). Bonus: skip fetch
+    // HTML halaman anime sama sekali kalau API ini berhasil.
+    const guessSlug = animeSlugToEpisodeSlugGuess(animeUrl, 1)
+    if (guessSlug) {
+        const playlist = await sokujPlaylist(guessSlug)
+        if (playlist && playlist.episodes.length > 0) {
+            const result: EpisodeEntry[] = playlist.episodes
+                .map(e => ({
+                    episode: parseFloat(e.episodeNumber),
+                    title: `Episode ${e.episodeNumber}`,
+                    url: `${base}/${e.slug}/`,
+                }))
+                .filter(e => !isNaN(e.episode))
+                .sort((a, b) => a.episode - b.episode)
+            if (result.length > 0) {
+                cacheSet(cacheKey, result, 10 * 60 * 1000)
+                return result
+            }
+        }
+    }
+
+    // Fallback: HTML scrape — cuma kepake kalau API di atas gagal/down.
+    // Discoped ketat pakai slug prefix anime ini, biar gak ke-ulang lagi
+    // nyangkut link rekomendasi anime lain yang formatnya kebetulan sama.
+    let html: string
+    try {
+        html = await sokujFetchHtml(animeUrl)
+    } catch {
+        return []
+    }
+
+    const animeSlugCore = (() => {
+        try {
+            const m = new URL(animeUrl).pathname.match(/^\/anime\/(.+?)-subtitle-indonesia\/?$/)
+            return m ? m[1] : null
+        } catch { return null }
+    })()
+
+    const $ = cheerio.load(html)
+    const entries: EpisodeEntry[] = []
+    const seen = new Set<string>()
+
+    const pushEp = (href: string, label: string) => {
+        if (!href || seen.has(href)) return
+        // Exclude: URL anime page (/anime/...) dan halaman statis
+        if (/^\/anime\/|^\/(tag|genre|jadwal|blog|cara-|page)\//.test(href)) return
+        // Wajib ada pola episode di URL buat dikategorikan sebagai episode
+        if (!/-episode-\d|-eps-\d/i.test(href) && !/-subtitle-indonesia\/?$/.test(href)) return
+        // Wajib prefix-nya sama kayak anime slug ini — exclude widget
+        // rekomendasi/terbaru anime LAIN yang formatnya kebetulan cocok regex
+        // di atas tapi bukan episode dari anime yang lagi dicari.
+        if (animeSlugCore && !href.includes(animeSlugCore)) return
+        const full = href.startsWith('http') ? href : `${base}${href}`
+        if (full === animeUrl.replace(/\/$/, '') || full === animeUrl) return
+        seen.add(href)
+        const epNum = parseEpisodeNumber(label || href, full)
+        entries.push({ episode: epNum, title: label || `Episode ${epNum}`, url: full })
+    }
+
+    // Primer (kalau ada): __NEXT_DATA__ — gak pernah ketemu di Sokuja App
+    // Router per investigasi 29 Jun 2026, tapi dibiarin buat jaga-jaga kalau
+    // ada varian domain/theme lain yang masih pakai Pages Router.
+    const nextData = parseNextData(html)
+    if (nextData) {
+        const epUrls = collectFromObj(nextData.props, 'episode')
+        for (const ep of epUrls) pushEp(ep, '')
+        const tryEps = (obj: any, d = 0): void => {
+            if (d > 6 || !obj || typeof obj !== 'object') return
+            const link = obj.link || obj.slug || obj.href || obj.url
+            const title = obj.title || obj.name || ''
+            if (link && typeof link === 'string' && /-episode-\d/i.test(link)) {
+                pushEp(link, typeof title === 'string' ? title : '')
+            }
+            for (const v of Object.values(obj)) {
+                if (Array.isArray(v)) v.forEach(i => tryEps(i, d + 1))
+                else if (v && typeof v === 'object') tryEps(v, d + 1)
+            }
+        }
+        tryEps(nextData.props)
+    }
+
+    if (entries.length === 0) {
+        $('a[href]').each((_, el) => {
+            const href = ($(el).attr('href') ?? '').trim()
+            pushEp(href, $(el).text().trim())
+        })
+    }
+
+    if (entries.length === 0) return []
+
+    // Dedup + sort ASC by episode number
+    const map = new Map<string, EpisodeEntry>()
+    for (const ep of entries) {
+        const key = ep.url
+        if (!map.has(key)) map.set(key, ep)
+    }
+    const result = [...map.values()].sort((a, b) => {
+        if (a.episode < 0 && b.episode < 0) return 0
+        if (a.episode < 0) return 1
+        if (b.episode < 0) return -1
+        return a.episode - b.episode
+    })
+
+    if (result.length > 0) cacheSet(cacheKey, result, 10 * 60 * 1000)
+    return result
+}
+
+// ── Stream extraction ─────────────────────────────────────────────────────────
+interface SokujSource { url: string; quality: number | null }
+
+function sokujExtractSources(html: string): SokujSource[] {
+    const found: SokujSource[] = []
+    const seen = new Set<string>()
+
+    const push = (url: string, ctx: string) => {
+        if (!url || seen.has(url)) return
+        if (!/\.(?:mp4|m3u8)(?:[?#]|$)/i.test(url)) return
+        const full = url.startsWith('//') ? `https:${url}` : url
+        if (!full.startsWith('http')) return
+        seen.add(full)
+        found.push({ url: full, quality: parseQualityNumber(ctx, full) })
+    }
+
+    // 1. __NEXT_DATA__ — pendekatan utama untuk Next.js app
+    //    Sokuja mungkin simpan video URL di pageProps.episode.videoUrl atau serupa
+    const nextData = parseNextData(html)
+    if (nextData) {
+        const videoUrls = collectFromObj(nextData.props, 'video')
+        for (const url of videoUrls) {
+            // Buat context buat nebak kualitas: coba ambil dari key di sekitarnya
+            push(url, url)
+        }
+        // Mining lebih dalam: cari object yang punya url/file + quality/label/resolution
+        const tryExtractStream = (obj: any, d = 0): void => {
+            if (d > 8 || !obj || typeof obj !== 'object') return
+            // Pattern: {url: "...", quality: "720p"} atau {file: "...", label: "720p"}
+            const url = obj.url || obj.file || obj.src || obj.stream || obj.source || obj.videoUrl || obj.streamUrl
+            const qual = obj.quality || obj.label || obj.resolution || obj.size || ''
+            if (url && typeof url === 'string' && /\.(?:mp4|m3u8)/i.test(url)) {
+                push(url, String(qual) + ' ' + url)
+            }
+            for (const v of Object.values(obj)) {
+                if (Array.isArray(v)) v.forEach(i => tryExtractStream(i, d + 1))
+                else if (v && typeof v === 'object') tryExtractStream(v, d + 1)
+            }
+        }
+        tryExtractStream(nextData.props)
+    }
+
+    // 2. Regex scan seluruh HTML — tangkap URL mp4/m3u8 yang mungkin ada
+    //    di dalam string JS, JSON, atau attribute yang tidak ter-parse cheerio
+    const videoUrlPattern = /((?:https?:)?\/\/[^\s"'<>]+\.(?:mp4|m3u8)(?:[?#][^\s"'<>]*)?)/gi
+    for (const m of html.matchAll(videoUrlPattern)) {
+        const url = m[1]
+        // Cari konteks kualitas di sekitar posisi match (100 char sebelumnya)
+        const idx = html.indexOf(m[0])
+        const ctx = html.slice(Math.max(0, idx - 100), idx + 50)
+        push(url, ctx)
+    }
+
+    // 3. <video>/<source> tags (fallback kalau ada server-side rendering player)
+    const $ = cheerio.load(html)
+    $('video source, video').each((_, el) => {
+        const src = ($(el).attr('src') ?? '').trim()
+        if (src) push(src, $(el).closest('div,section').text())
+    })
+
+    return found
+}
+
+// ── episodeId extraction ──────────────────────────────────────────────────────
+// Sokuja App Router nge-stream halaman via RSC payload (self.__next_f.push(...)),
+// bukan <script id="__NEXT_DATA__"> klasik. episodeId numerik (dipakai buat hit
+// /api/video-mirrors/?e=) ke-embed literal di payload itu sebagai "episodeId":N —
+// tapi karena payload-nya sendiri adalah JSON-stringified di dalam JS string
+// literal, quote-nya ke-escape jadi \"episodeId\":N di HTML mentah. Regex di
+// bawah handle dua bentuk (escaped & plain) sekaligus, jadi gak perlu parse
+// struktur RSC yang ruwet — confirmed dari live HTML per 29 Jun 2026.
+function extractEpisodeId(html: string): number | null {
+    const m = html.match(/\\?"episodeId\\?"\s*:\s*(\d+)/)
+    return m ? parseInt(m[1], 10) : null
+}
+
+// ── video-mirrors API ─────────────────────────────────────────────────────────
+// Endpoint internal Sokuja: GET {base}/api/video-mirrors/?e={episodeId}
+// Balikin direct MP4 URL per quality (480p/720p/1080p) — confirmed live, gak
+// butuh Referer/Origin khusus kayak Megaplay/Otakudesu. Jauh lebih reliable
+// drpd regex-scan HTML/RSC payload, dan satu-satunya cara dapetin 1080p
+// (sokujExtractSources dari HTML gak pernah nemu source di atas 720p).
+interface SokujMirrorRaw {
+    id: number
+    serverName: string
+    embedUrl: string
+    embedType: string // "mp4" yang kepake; abaikan tipe lain (iframe/dll) kalau ada
+    quality: string // "480p" | "720p" | "1080p"
+}
+interface SokujMirrorsResponse { mirrors: SokujMirrorRaw[] }
+
+async function sokujVideoMirrors(episodeId: number): Promise<SokujSource[]> {
+    const cacheKey = `sokuja-mirrors:${episodeId}`
+    const cached = cacheGet<SokujSource[]>(cacheKey)
+    if (cached) return cached
+
+    for (const base of SOKUJA_MIRRORS) {
+        try {
+            const res = await withTimeout(
+                fetch(`${base}/api/video-mirrors/?e=${episodeId}`, {
+                    headers: { ...HTML_HDRS, Accept: 'application/json' },
+                    cache: 'no-store',
+                }),
+                5_000,
+            )
+            if (!res.ok) continue
+
+            const json = await res.json() as SokujMirrorsResponse
+            const sources: SokujSource[] = (json.mirrors ?? [])
+                .filter(m => m.embedType === 'mp4' && !!m.embedUrl)
+                .map(m => ({ url: m.embedUrl, quality: parseInt(m.quality, 10) || null }))
+
+            if (sources.length > 0) {
+                cacheSet(cacheKey, sources, 10 * 60 * 1000)
+                return sources
+            }
+        } catch { /* coba mirror berikutnya */ }
+    }
+    return []
+}
+
+async function sokujResolveStream(
+    episodeUrl: string,
+    preferredQuality?: number | null,
+): Promise<StreamResult> {
+    const quality = preferredQuality ?? 720
+    const cacheKey = `sokuja-stream:${extractSlug(episodeUrl)}:${quality}`
+    const cached = cacheGet<StreamResult>(cacheKey)
+    if (cached) return cached
+
+    let html: string
+    try {
+        html = await sokujFetchHtml(episodeUrl)
+    } catch {
+        return { iframe: null, directUrl: null, mirrors: [], resolved: false, availableQualities: [] }
+    }
+
+    // Primer: API video-mirrors — direct MP4 per quality (sampai 1080p),
+    // jauh lebih reliable drpd regex/RSC-mining di bawah.
+    let sources: SokujSource[] = []
+    const episodeId = extractEpisodeId(html)
+    if (episodeId !== null) {
+        sources = await sokujVideoMirrors(episodeId)
+    }
+
+    // Fallback: __NEXT_DATA__ / regex HTML scan kalau episodeId gak ketemu
+    // atau API video-mirrors gagal/kosong buat episode ini.
+    if (sources.length === 0) {
+        sources = sokujExtractSources(html)
+    }
+
+    const availableQualities = [...new Set(
+        sources.map(s => s.quality).filter((q): q is number => q !== null)
+    )].sort((a, b) => b - a)
+
+    let directUrl: string | null = null
+    let iframe: string | null = null
+
+    if (sources.length > 0) {
+        const sorted = [...sources].sort((a, b) => {
+            const aMatch = a.quality === quality ? 1 : 0
+            const bMatch = b.quality === quality ? 1 : 0
+            if (aMatch !== bMatch) return bMatch - aMatch
+            return (b.quality ?? 0) - (a.quality ?? 0)
+        })
+        directUrl = sorted[0].url
+    }
+
+    // Fallback: iframe — kalau API video-mirrors, __NEXT_DATA__, dan regex
+    // scan ketiganya gagal, kemungkinan player Sokuja full client-side untuk
+    // episode ini. Coba extract dari iframe.
+    if (!directUrl) {
+        const $ = cheerio.load(html)
+        let candidateIframe: string | null = null
+        $('iframe').each((_, el) => {
+            if (candidateIframe) return
+            const src = ($(el).attr('src') ?? $(el).attr('data-src') ?? '').trim()
+            if (src.startsWith('http')) candidateIframe = src
+        })
+        if (candidateIframe && getHostScore(candidateIframe) >= EXTRACTABLE_HOST_SCORE_MIN) {
+            directUrl = await extractDirectVideoUrl(candidateIframe, episodeUrl)
+        }
+        iframe = directUrl ? candidateIframe : null
+    }
+
+    const resolved = !!directUrl
+    const result: StreamResult = { iframe, directUrl, mirrors: [], resolved, availableQualities }
+    if (resolved) cacheSet(cacheKey, result, 5 * 60 * 1000)
+    return result
+}
+
+const sokujAdapter: SourceAdapter = {
+    id: 'sokuja',
+    search: sokujSearch,
+    episodes: sokujEpisodes,
+    resolveStream: sokujResolveStream,
+}
+
+// Urutan SOURCE_ADAPTERS = urutan preferensi kalau quality setara.
+// Sokuja paling depan: domain stabil + 1080p support.
+const SOURCE_ADAPTERS: SourceAdapter[] = [sokujAdapter, otakudesuAdapter, nontonanimeidAdapter]
 
 // Threshold "udah cukup bagus, gak usah cari source lain" — sesuai request:
 // sub indo 720p itu syarat minimum buat sebuah source "boleh nge-lock".
@@ -2786,6 +3329,153 @@ export async function GET(req: Request) {
                 })
             } catch (e: any) {
                 return Response.json({ url, error: e.message }, { status: 500 })
+            }
+        }
+
+        // ── debug-sokuja ──────────────────────────────────────────────────────
+        // Inspeksi HTML mentah + sources Sokuja. Pakai ini kalau sokujExtractSources
+        // gagal buat episode tertentu — dump hasilnya ke console buat debug.
+        //
+        // Usage:
+        //   ?endpoint=debug-sokuja                         → health check semua mirror
+        //   ?endpoint=debug-sokuja&url={episode_url}       → dump sources + iframes
+        //   ?endpoint=debug-sokuja&url={anime_url}         → dump episode links
+        if (endpoint === 'debug-sokuja') {
+            const url = searchParams.get('url')
+
+            if (!url) {
+                const checks = await Promise.allSettled(
+                    SOKUJA_MIRRORS.map(async base => {
+                        const t0 = Date.now()
+                        try {
+                            const html = await withTimeout(sokujFetchHtml(`${base}/`), 8_000)
+                            return { mirror: base, alive: html.length > 200, ms: Date.now() - t0, htmlLength: html.length }
+                        } catch (e: any) {
+                            return { mirror: base, alive: false, ms: Date.now() - t0, error: e.message }
+                        }
+                    })
+                )
+                return Response.json({
+                    sokujaMirrors: checks.map(r => r.status === 'fulfilled' ? r.value : { error: 'failed' }),
+                })
+            }
+
+            try {
+                const html = await sokujFetchHtml(url)
+                const sources = sokujExtractSources(html)
+                const $ = cheerio.load(html)
+
+                // ── v9: cek hasil ekstraksi episodeId + API video-mirrors ──
+                // langsung di sini, biar gampang ditest dari browser tanpa
+                // perlu lewat full watch page.
+                const episodeId = extractEpisodeId(html)
+                const videoMirrorsApi = episodeId !== null ? await sokujVideoMirrors(episodeId) : []
+
+                // Kumpulkan semua iframe candidates
+                const iframes: string[] = []
+                $('iframe').each((_, el) => {
+                    const src = ($(el).attr('src') ?? $(el).attr('data-src') ?? '').trim()
+                    if (src) iframes.push(src)
+                })
+
+                // Kumpulkan episode links (buat debug halaman anime)
+                const episodeLinks: string[] = []
+                $('a').each((_, el) => {
+                    const href = $(el).attr('href') ?? ''
+                    if (/-episode-\d|-eps-\d/i.test(href) && !/^\/anime\//.test(href)) episodeLinks.push(href)
+                })
+
+                // Dump __NEXT_DATA__ — ini kunci untuk debug Next.js app Sokuja
+                const nextData = parseNextData(html)
+                const nextDataPageProps = nextData?.props?.pageProps
+                    ? Object.keys(nextData.props.pageProps)
+                    : []
+                const nextDataVideos = nextData ? collectFromObj(nextData.props, 'video') : []
+                const nextDataEpisodes = nextData ? collectFromObj(nextData.props, 'episode') : []
+
+                return Response.json({
+                    url,
+                    htmlLength: html.length,
+                    isNextJs: html.includes('__NEXT_DATA__'),
+                    episodeId,
+                    videoMirrorsApi,
+                    nextDataPageProps,
+                    nextDataVideos: nextDataVideos.slice(0, 10),
+                    nextDataEpisodes: nextDataEpisodes.slice(0, 20),
+                    sourcesFound: sources,
+                    availableQualities: [...new Set(sources.map(s => s.quality).filter(Boolean))].sort((a, b) => (b ?? 0) - (a ?? 0)),
+                    iframes,
+                    episodeLinks: episodeLinks.slice(0, 20),
+                    hasPlayerScript: html.includes('jwplayer') || html.includes('videojs') || html.includes('plyr'),
+                    nextDataSnippet: nextData ? JSON.stringify(nextData.props?.pageProps ?? {}).slice(0, 3000) : null,
+                    // Dump potongan HTML mentah di sekitar kata kunci video/player/stream
+                    // supaya bisa debug hybrid site yang gak pakai __NEXT_DATA__
+                    htmlVideoContext: (() => {
+                        const keywords = ['m3u8', '.mp4', 'stream', 'videoUrl', 'fileUrl', 'window.__', 'data-src', 'data-video', 'dplayer', 'artplayer', 'hlsUrl', 'hls_url']
+                        const hits: { kw: string; ctx: string }[] = []
+                        for (const kw of keywords) {
+                            const idx = html.indexOf(kw)
+                            if (idx >= 0) hits.push({ kw, ctx: html.slice(Math.max(0, idx - 60), idx + 120) })
+                        }
+                        return hits
+                    })(),
+                    // Cari semua window.__ assignments (common pattern buat client-side data injection)
+                    windowAssignments: (() => {
+                        const matches = [...html.matchAll(/window\.(__[A-Z_]+|[A-Z_]{2,})\s*=/g)]
+                        return matches.map(m => m[0]).slice(0, 20)
+                    })(),
+                })
+
+            } catch (e: any) {
+                return Response.json({ url, error: e.message }, { status: 500 })
+            }
+        }
+
+        // ── debug-sokuja-search ──────────────────────────────────────────────
+        // Tes ulang pipeline yang dipake findEpisodeUrlOnAdapter() di
+        // resolveStreamMultiSource — search → title-match → episode lookup.
+        // Dibikin karena debug-sokuja (di atas) cuma tes ekstraksi pas URL
+        // episode-nya udah dikasih langsung; ini buat ngecek tahap SEBELUM
+        // itu, yang ternyata bisa gagal duluan walau video-mirrors API-nya
+        // sendiri udah confirmed jalan.
+        //
+        // Usage: ?endpoint=debug-sokuja-search&q={anime_title}&episode={num}
+        if (endpoint === 'debug-sokuja-search') {
+            const q = searchParams.get('q')
+            const episodeParam = searchParams.get('episode')
+            if (!q) return Response.json({ error: 'q required' }, { status: 400 })
+
+            try {
+                const searchResults = await sokujSearch(q)
+                const scored = searchResults
+                    .map(r => ({ ...r, score: titleSimilarity(q, r.title) }))
+                    .sort((a, b) => b.score - a.score)
+                const best = scored[0] ?? null
+                const bestPassesThreshold = !!best && best.score >= CROSS_SOURCE_TITLE_THRESHOLD
+
+                let episodes: EpisodeEntry[] = []
+                let matchedEpisode: EpisodeEntry | null = null
+                if (bestPassesThreshold && best) {
+                    episodes = await sokujEpisodes(best.url)
+                    if (episodeParam) {
+                        const epNum = parseFloat(episodeParam)
+                        matchedEpisode = episodes.find(e => e.episode === epNum) ?? null
+                    }
+                }
+
+                return Response.json({
+                    query: q,
+                    searchResultsCount: searchResults.length,
+                    searchResultsTop5: scored.slice(0, 5),
+                    crossSourceTitleThreshold: CROSS_SOURCE_TITLE_THRESHOLD,
+                    bestMatch: best,
+                    bestPassesThreshold,
+                    episodesFoundCount: episodes.length,
+                    episodesSample: episodes.slice(0, 5),
+                    matchedEpisode,
+                })
+            } catch (e: any) {
+                return Response.json({ query: q, error: e.message }, { status: 500 })
             }
         }
 

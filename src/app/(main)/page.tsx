@@ -188,21 +188,28 @@ export default function HomePage() {
   useEffect(() => { setBookmarked(false) }, [heroIdx])
 
   // ── New Update ────────────────────────────────────────────────────────────
-  // Sumber: data `ongoing` yang sudah di-enrich server (daysSinceUpdate + currentEpisode).
-  // Filter: buang anime yang belum ada episode (currentEpisode null / <= 0).
-  // Sort:   daysSinceUpdate ASC → paling baru tampil pertama.
-  const newUpdateAnime = useMemo(() =>
-    ongoing
-      .filter(a => {
-        const ep = (a as any).currentEpisode
-        if (ep == null) return false
-        const n = typeof ep === 'string' ? parseInt(ep, 10) : Number(ep)
-        return !isNaN(n) && n > 0
-      })
-      .sort((a, b) => ((a as any).daysSinceUpdate ?? 99) - ((b as any).daysSinceUpdate ?? 99))
-      .slice(0, 20),
-    [ongoing]
-  )
+  // Pakai urutan langsung dari API (Otakudesu sudah sort by latest update di server).
+  // Tidak di-sort ulang pakai daysSinceUpdate karena field itu sering tidak akurat.
+  // Shuffle ringan berbasis waktu (seed berubah tiap 10 menit) biar tidak itu-itu mulu.
+  const newUpdateAnime = useMemo(() => {
+    // `ongoing` udah deduped + sorted by latest update langsung dari API (lihat useAnime.ts).
+    // Dulu ada filter `currentEpisode > 0` di sini, tapi field itu ga selalu ada di response
+    // API → hampir semua item ke-filter out, sisa pool-nya kecil banget, jadi shuffle di bawah
+    // cuma muter-muter di item yang sama. Dihapus, langsung pakai ongoing apa adanya.
+
+    // 1. Ambil top 30 sesuai urutan API
+    const top30 = ongoing.slice(0, 30)
+
+    // 2. Shuffle ringan — seed berubah tiap 10 menit sehingga urutan rotate natural
+    const seed = Math.floor(Date.now() / (1000 * 60 * 10))
+    const shuffled = [...top30].sort((a, b) => {
+      const ha = ((a as any).animeId?.charCodeAt(0) ?? 0) ^ seed
+      const hb = ((b as any).animeId?.charCodeAt(0) ?? 0) ^ seed
+      return ha - hb
+    })
+
+    return shuffled.slice(0, 20)
+  }, [ongoing])
 
   const romanceAnime = useMemo(() =>
     animeList
