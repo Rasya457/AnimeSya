@@ -288,192 +288,195 @@ function CommentSection({ malId, epNum }: { malId: string; epNum: number }) {
       setReplyingTo(null)
     } catch {
       // biarin input reply tetep kebuka kalau gagal kirim
-    } finally {
-      setReplySubmitting(false)
-    }
-  }
-
-  async function handleDelete(id: string) {
-    try { await deleteDoc(doc(db, 'comments', id)) } catch { /* silent */ }
-  }
-
-  function formatDate(ts: number) {
-    return new Date(ts).toLocaleDateString('id-ID', {
-      day: 'numeric', month: 'short', year: 'numeric',
-      hour: '2-digit', minute: '2-digit',
-    })
-  }
-
-  const totalCommentCount = comments.length
-
-  function renderComment(c: Comment, isReply: boolean) {
-    const isOwn = !!user && c.authorId === user.id
-    const replies = isReply ? [] : repliesByParent.get(c.id) ?? []
-
-    return (
-      <div
-        key={c.id}
-        className={`rounded-2xl p-3.5 flex gap-3 border transition-colors ${isOwn ? 'bg-emerald-950/20 border-emerald-800/20' : 'bg-[#0f0f1a] border-white/5'
-          }`}
-      >
-        <div className={`w-8 h-8 rounded-full flex items-center justify-center text-[11px] font-extrabold text-white uppercase select-none flex-shrink-0 ${getAvatarBgColor(c.authorName)}`}>
-          {c.authorName[0]}
-        </div>
-        <div className="flex-1 flex flex-col gap-1.5 min-w-0 min-h-0">
-          <div className="flex items-center justify-between gap-1">
-            <div className="flex items-center gap-2 flex-wrap">
-              <span className="text-xs font-bold text-white">{c.authorName}</span>
-              {isOwn && (
-                <span className="text-[9px] font-bold text-emerald-400 bg-emerald-900/30 border border-emerald-700/30 px-1.5 py-0.5 rounded-full uppercase tracking-wide">Kamu</span>
-              )}
-              <span className="text-[10px] text-zinc-650 font-semibold">{formatDate(c.createdAt)}</span>
-            </div>
-            {isOwn && (
-              <button
-                onClick={() => handleDelete(c.id)}
-                className="p-1.5 rounded-lg text-zinc-600 hover:text-red-400 hover:bg-red-950/40 transition-colors cursor-pointer flex-shrink-0"
-                title="Hapus komentar"
-              >
-                <Trash2 className="w-3.5 h-3.5" />
-              </button>
-            )}
-          </div>
-
-          <p className="text-[13px] text-zinc-300 leading-relaxed whitespace-pre-wrap break-words">{c.text}</p>
-
-          {!isReply && (
-            <button
-              onClick={() => { setReplyingTo(replyingTo === c.id ? null : c.id); setReplyText('') }}
-              disabled={!user}
-              className="self-start text-[11px] font-bold text-zinc-500 hover:text-emerald-400 disabled:opacity-40 disabled:cursor-not-allowed transition-colors cursor-pointer mt-0.5"
-            >
-              {replyingTo === c.id ? 'Batal' : 'Balas'}
-            </button>
-          )}
-
-          {!isReply && replyingTo === c.id && user && (
-            <div className="flex items-start gap-2 mt-1.5">
-              <div className={`w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-extrabold text-white uppercase select-none flex-shrink-0 mt-0.5 ${getAvatarBgColor(user.name)}`}>
-                {user.name[0]}
-              </div>
-              <div className="flex-1 flex flex-col gap-1.5">
-                <textarea
-                  value={replyText}
-                  onChange={e => setReplyText(e.target.value)}
-                  onKeyDown={e => {
-                    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSubmitReply(c.id) }
-                  }}
-                  placeholder={`Balas ${c.authorName}...`}
-                  rows={1}
-                  maxLength={500}
-                  autoFocus
-                  className="w-full bg-[#07070f] border border-white/5 rounded-xl px-3 py-2 text-xs text-white placeholder-zinc-600 focus:outline-none focus:border-emerald-500/50 focus:ring-1 focus:ring-emerald-500/20 transition-all resize-none"
-                />
-                <div className="flex items-center justify-end gap-2">
-                  <button
-                    onClick={() => handleSubmitReply(c.id)}
-                    disabled={!replyText.trim() || replySubmitting}
-                    className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 disabled:opacity-30 disabled:cursor-not-allowed transition-all text-white text-[11px] font-bold cursor-pointer active:scale-95"
-                  >
-                    <Send className="w-3 h-3" />
-                    Kirim
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {!isReply && replies.length > 0 && (
-            <div className="flex flex-col gap-2.5 mt-2 pl-3 border-l-2 border-white/5">
-              {replies.map(r => renderComment(r, true))}
-            </div>
-          )}
-        </div>
-      </div>
-    )
-  }
-
-  return (
-    <section className="flex flex-col gap-4">
-      {/* Header */}
-      <div className="flex items-center gap-2">
-        <div className="w-6 h-6 rounded-lg bg-gradient-to-br from-emerald-500 to-teal-500 flex items-center justify-center flex-shrink-0">
-          <MessageCircle className="w-3.5 h-3.5 text-white" />
-        </div>
-        <h3 className="text-sm font-extrabold text-white">
-          {commentsLoading
-            ? 'Memuat komentar…'
-            : totalCommentCount === 0 ? 'Belum ada komentar' : `${totalCommentCount.toLocaleString('id-ID')} Komentar`}
-        </h3>
-      </div>
-
-      {/* Tab */}
-      <div className="flex items-center justify-between gap-2 border-b border-white/5 pb-3">
-        <div className="flex items-center gap-1 bg-[#0f0f1a] p-1 rounded-xl border border-white/5">
-          <button
-            onClick={() => setActiveTab('top')}
-            className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${activeTab === 'top'
-                ? 'bg-gradient-to-r from-emerald-600 to-teal-600 text-white shadow-sm'
-                : 'text-zinc-500 hover:text-zinc-300'
-              }`}
-          >
-            Top
-          </button>
-          <button
-            onClick={() => setActiveTab('newest')}
-            className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${activeTab === 'newest'
-                ? 'bg-gradient-to-r from-emerald-600 to-teal-600 text-white shadow-sm'
-                : 'text-zinc-500 hover:text-zinc-300'
-              }`}
-          >
-            Terbaru
-          </button>
-        </div>
-      </div>
-
-      {/* Input — komentar baru */}
-      {user ? (
-        <div className="flex items-start gap-2.5 bg-[#0f0f1a] border border-white/5 rounded-2xl p-3.5">
-          <div className={`w-8 h-8 rounded-full flex items-center justify-center text-[11px] font-extrabold text-white uppercase select-none flex-shrink-0 mt-0.5 ${getAvatarBgColor(user.name)}`}>
-            {user.name[0]}
-          </div>
-          <div className="flex-1 flex flex-col gap-2">
-            <span className="text-[10px] font-bold text-zinc-400">{user.name}</span>
-            <textarea
-              value={commentText}
-              onChange={e => setCommentText(e.target.value)}
-              onKeyDown={e => {
-                if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSubmit() }
-              }}
-              placeholder="Tulis komentar kamu..."
-              rows={2}
-              maxLength={500}
-              className="w-full bg-[#07070f] border border-white/5 rounded-xl px-3 py-2.5 text-xs text-white placeholder-zinc-600 focus:outline-none focus:border-emerald-500/50 focus:ring-1 focus:ring-emerald-500/20 transition-all resize-none"
-            />
-            <div className="flex items-center justify-between">
-              <span className="text-[10px] text-zinc-600">{commentText.length}/500</span>
-              <button
-                onClick={handleSubmit}
-                disabled={!commentText.trim() || submitting}
-                className="flex items-center gap-1.5 px-4 py-1.5 rounded-full bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 disabled:opacity-30 disabled:cursor-not-allowed transition-all text-white text-xs font-bold cursor-pointer active:scale-95 shadow-md shadow-emerald-500/20"
-              >
-                <Send className="w-3 h-3" />
-                <span>Kirim</span>
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : (
-        <div className="flex items-center justify-center gap-2 bg-[#0f0f1a] border border-white/5 rounded-2xl p-4 text-xs text-zinc-500 font-medium">
-          Login dulu buat ikut komentar
-        </div>
-      )}
-
-      {/* Comment list */}
-      <div className="flex flex-col gap-2.5 mt-1">
-        {!commentsLoading && sortedTopLevel.length === 0 && (
-          <div className="flex flex-col items-center gap-2 py-10 text-zinc-600">
-            <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-emerald-500/10 to-teal-500/10 border border-emerald-500/10 flex items-center justify-center">
+// MISSING LINE 291
+// MISSING LINE 292
+// MISSING LINE 293
+// MISSING LINE 294
+// MISSING LINE 295
+// MISSING LINE 296
+// MISSING LINE 297
+// MISSING LINE 298
+// MISSING LINE 299
+// MISSING LINE 300
+// MISSING LINE 301
+// MISSING LINE 302
+// MISSING LINE 303
+// MISSING LINE 304
+// MISSING LINE 305
+// MISSING LINE 306
+// MISSING LINE 307
+// MISSING LINE 308
+// MISSING LINE 309
+// MISSING LINE 310
+// MISSING LINE 311
+// MISSING LINE 312
+// MISSING LINE 313
+// MISSING LINE 314
+// MISSING LINE 315
+// MISSING LINE 316
+// MISSING LINE 317
+// MISSING LINE 318
+// MISSING LINE 319
+// MISSING LINE 320
+// MISSING LINE 321
+// MISSING LINE 322
+// MISSING LINE 323
+// MISSING LINE 324
+// MISSING LINE 325
+// MISSING LINE 326
+// MISSING LINE 327
+// MISSING LINE 328
+// MISSING LINE 329
+// MISSING LINE 330
+// MISSING LINE 331
+// MISSING LINE 332
+// MISSING LINE 333
+// MISSING LINE 334
+// MISSING LINE 335
+// MISSING LINE 336
+// MISSING LINE 337
+// MISSING LINE 338
+// MISSING LINE 339
+// MISSING LINE 340
+// MISSING LINE 341
+// MISSING LINE 342
+// MISSING LINE 343
+// MISSING LINE 344
+// MISSING LINE 345
+// MISSING LINE 346
+// MISSING LINE 347
+// MISSING LINE 348
+// MISSING LINE 349
+// MISSING LINE 350
+// MISSING LINE 351
+// MISSING LINE 352
+// MISSING LINE 353
+// MISSING LINE 354
+// MISSING LINE 355
+// MISSING LINE 356
+// MISSING LINE 357
+// MISSING LINE 358
+// MISSING LINE 359
+// MISSING LINE 360
+// MISSING LINE 361
+// MISSING LINE 362
+// MISSING LINE 363
+// MISSING LINE 364
+// MISSING LINE 365
+// MISSING LINE 366
+// MISSING LINE 367
+// MISSING LINE 368
+// MISSING LINE 369
+// MISSING LINE 370
+// MISSING LINE 371
+// MISSING LINE 372
+// MISSING LINE 373
+// MISSING LINE 374
+// MISSING LINE 375
+// MISSING LINE 376
+// MISSING LINE 377
+// MISSING LINE 378
+// MISSING LINE 379
+// MISSING LINE 380
+// MISSING LINE 381
+// MISSING LINE 382
+// MISSING LINE 383
+// MISSING LINE 384
+// MISSING LINE 385
+// MISSING LINE 386
+// MISSING LINE 387
+// MISSING LINE 388
+// MISSING LINE 389
+// MISSING LINE 390
+// MISSING LINE 391
+// MISSING LINE 392
+// MISSING LINE 393
+// MISSING LINE 394
+// MISSING LINE 395
+// MISSING LINE 396
+// MISSING LINE 397
+// MISSING LINE 398
+// MISSING LINE 399
+// MISSING LINE 400
+// MISSING LINE 401
+// MISSING LINE 402
+// MISSING LINE 403
+// MISSING LINE 404
+// MISSING LINE 405
+// MISSING LINE 406
+// MISSING LINE 407
+// MISSING LINE 408
+// MISSING LINE 409
+// MISSING LINE 410
+// MISSING LINE 411
+// MISSING LINE 412
+// MISSING LINE 413
+// MISSING LINE 414
+// MISSING LINE 415
+// MISSING LINE 416
+// MISSING LINE 417
+// MISSING LINE 418
+// MISSING LINE 419
+// MISSING LINE 420
+// MISSING LINE 421
+// MISSING LINE 422
+// MISSING LINE 423
+// MISSING LINE 424
+// MISSING LINE 425
+// MISSING LINE 426
+// MISSING LINE 427
+// MISSING LINE 428
+// MISSING LINE 429
+// MISSING LINE 430
+// MISSING LINE 431
+// MISSING LINE 432
+// MISSING LINE 433
+// MISSING LINE 434
+// MISSING LINE 435
+// MISSING LINE 436
+// MISSING LINE 437
+// MISSING LINE 438
+// MISSING LINE 439
+// MISSING LINE 440
+// MISSING LINE 441
+// MISSING LINE 442
+// MISSING LINE 443
+// MISSING LINE 444
+// MISSING LINE 445
+// MISSING LINE 446
+// MISSING LINE 447
+// MISSING LINE 448
+// MISSING LINE 449
+// MISSING LINE 450
+// MISSING LINE 451
+// MISSING LINE 452
+// MISSING LINE 453
+// MISSING LINE 454
+// MISSING LINE 455
+// MISSING LINE 456
+// MISSING LINE 457
+// MISSING LINE 458
+// MISSING LINE 459
+// MISSING LINE 460
+// MISSING LINE 461
+// MISSING LINE 462
+// MISSING LINE 463
+// MISSING LINE 464
+// MISSING LINE 465
+// MISSING LINE 466
+// MISSING LINE 467
+// MISSING LINE 468
+// MISSING LINE 469
+// MISSING LINE 470
+// MISSING LINE 471
+// MISSING LINE 472
+// MISSING LINE 473
+// MISSING LINE 474
+// MISSING LINE 475
+// MISSING LINE 476
+// MISSING LINE 477
+// MISSING LINE 478
+// MISSING LINE 479
               <MessageCircle className="w-5 h-5 opacity-40" />
             </div>
             <p className="text-xs font-medium">Jadilah yang pertama berkomentar!</p>
@@ -706,7 +709,7 @@ export default function WatchClient() {
   function togglePlayPause() {
     const video = videoRef.current
     if (!video) return
-    if (video.paused) video.play().catch(() => { })
+    if (video.paused) video.play().catch(() => {})
     else video.pause()
     bumpControlsVisibility()
   }
@@ -886,13 +889,13 @@ export default function WatchClient() {
       container.requestFullscreen()
         .then(() => {
           const orientation = screen.orientation as ScreenOrientation & { lock?: (o: string) => Promise<void> }
-          orientation?.lock?.('landscape').catch(() => { })
+          orientation?.lock?.('landscape').catch(() => {})
         })
-        .catch(() => { })
+        .catch(() => {})
     } else {
       const orientation = screen.orientation as ScreenOrientation & { unlock?: () => void }
       orientation?.unlock?.()
-      document.exitFullscreen().catch(() => { })
+      document.exitFullscreen().catch(() => {})
     }
   }
 
@@ -1045,135 +1048,135 @@ export default function WatchClient() {
 
   // ── Visibility API ─────────────────────────────────────────────────────────
   useEffect(() => {
-    function onVisibility() {
-      if (document.hidden) {
-        pauseSegment()
-        setIsPlaying(false)
-        save(computePercent())
-        savePosition(malId, epNum, currentTimeRef.current, actualDurationRef.current)
-      } else {
-        if (watchedMsRef.current > 0 || progressRef.current > 0) startSegment()
-      }
-    }
-    document.addEventListener('visibilitychange', onVisibility)
-    return () => document.removeEventListener('visibilitychange', onVisibility)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [malId, epNum])
-
-  // ── Save instan pas tab/browser ditutup ────────────────────────────────────
-  // 'visibilitychange' di atas biasanya kepanggil duluan pas nutup tab, tapi
-  // gak 100% dijamin di semua browser/PWA. 'pagehide' lebih reliable buat
-  // kasus ini (dan tetep kepanggil pas bfcache), jadi dobel-in sini sebagai
-  // jaring pengaman — daripada nunggu interval 15 detik yang mungkin belum
-  // sempet jalan kalau user baru nonton bentar terus langsung nutup tab.
-  useEffect(() => {
-    function persistNow() {
-      save(computePercent())
-      savePosition(malId, epNum, currentTimeRef.current, actualDurationRef.current)
-    }
-    window.addEventListener('pagehide', persistNow)
-    window.addEventListener('beforeunload', persistNow)
-    return () => {
-      window.removeEventListener('pagehide', persistNow)
-      window.removeEventListener('beforeunload', persistNow)
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [malId, epNum])
-
-  // ── postMessage ────────────────────────────────────────────────────────────
-  useEffect(() => {
-    function onMessage(e: MessageEvent) {
-      let data = e.data
-      if (typeof data === 'string') { try { data = JSON.parse(data) } catch { return } }
-      const event = data?.event ?? data?.type ?? data?.name
-
-      if (typeof data?.currentTime === 'number' && typeof data?.duration === 'number' && data.duration > 0) {
-        usingPostMsgRef.current = true
-        currentTimeRef.current = data.currentTime
-        durationMsRef.current = data.duration * 1000
-        actualDurationRef.current = data.duration
-        const pct = Math.round((data.currentTime / data.duration) * 100)
-        if (pct >= 95) { save(100); stopTracking(); return }
-        progressRef.current = pct
-        return
-      }
-
-      if (event === 'pause') {
-        pauseSegment()
-        setIsPlaying(false)
-        savePosition(malId, epNum, currentTimeRef.current, actualDurationRef.current)
-        return
-      }
-      if (event === 'play') { startSegment(); setIsPlaying(true); return }
-      if (event === 'complete') { save(100); stopTracking(); return }
-      if (event === 'error') { setMegaplayError(true); return }
-    }
-    window.addEventListener('message', onMessage)
-    return () => window.removeEventListener('message', onMessage)
-    // Sengaja include malId & epNum (beda dari sebelumnya yang [] kosong) —
-    // savePosition butuh nilai yang selalu fresh, bukan yang ke-capture pas
-    // effect ini pertama kali jalan (bakal stale abis ganti episode).
-  }, [malId, epNum])
-
-  // ── Popup ad blocker ───────────────────────────────────────────────────────
-  useEffect(() => {
-    function onBlur() {
-      if (isHoveringPlayer.current) setTimeout(() => window.focus(), 50)
-    }
-    window.addEventListener('blur', onBlur)
-    return () => window.removeEventListener('blur', onBlur)
-  }, [])
-
-  useEffect(() => { setIsLoading(true); setMegaplayError(false) }, [iframeKey, server, epNum])
-
-  useEffect(() => {
-    if (server === 'indo' && indoSrc) {
-      setIframeKey(k => k + 1)
-      setIsLoading(true)
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [indoSrc])
-
-  // ── Setup direct video player ──────────────────────────────────────────────
-  useEffect(() => {
-    if (server !== 'indo' || !directUrl) return
-    const videoEl = videoRef.current
-    if (!videoEl) return
-
-    let cancelled = false
-    const proxiedUrl = `/api/proxy/stream-indo?endpoint=proxy-video&url=${encodeURIComponent(directUrl)}&referer=${encodeURIComponent(indoReferer ?? indoSrc ?? directUrl)}`
-
-    async function setupVideo() {
-      if (!videoEl) return
-      if (hlsRef.current) { hlsRef.current.destroy(); hlsRef.current = null }
-
-      // Posisi resume dihitung SEKALI di sini, dari override eksplisit
-      // (ganti kualitas) atau localStorage — dipakai buat dua jalur di bawah.
-      const resumeAt = resumeSecondsRef.current || loadPosition(malId, epNum)
-      resumeSecondsRef.current = 0
-
-      const isHls = directUrl!.includes('.m3u8')
-      const hasNativeHls = videoEl.canPlayType('application/vnd.apple.mpegurl') !== ''
-
-      if (isHls && !hasNativeHls) {
-        try {
-          const { default: Hls } = await import('hls.js')
-          if (cancelled) return
-          if (Hls.isSupported()) {
-            const hls = new Hls({
-              enableWorker: true,
-              progressive: true,
-              maxBufferLength: 30,
-              maxMaxBufferLength: 90,
-              maxBufferSize: 60 * 1024 * 1024,
-              lowLatencyMode: true,
-              // PENTING buat resume: jangan andelin manual `video.currentTime
-              // = resumeAt` abis 'loadedmetadata' doang buat sumber HLS lewat
-              // hls.js/MSE. Kalau di-set kepagian (sebelum hls.js sempet
-              // buffer di sekitar timestamp itu), browser/MSE bisa diam-diam
-              // nyangkutin balik currentTime ke 0 begitu buffer beneran mulai
-              // ke-append — ini gotcha klasik hls.js, bukan salah kode resume
-              // yang kemarin. `startPosition` bikin hls.js sendiri yang
+// MISSING LINE 1051
+// MISSING LINE 1052
+// MISSING LINE 1053
+// MISSING LINE 1054
+// MISSING LINE 1055
+// MISSING LINE 1056
+// MISSING LINE 1057
+// MISSING LINE 1058
+// MISSING LINE 1059
+// MISSING LINE 1060
+// MISSING LINE 1061
+// MISSING LINE 1062
+// MISSING LINE 1063
+// MISSING LINE 1064
+// MISSING LINE 1065
+// MISSING LINE 1066
+// MISSING LINE 1067
+// MISSING LINE 1068
+// MISSING LINE 1069
+// MISSING LINE 1070
+// MISSING LINE 1071
+// MISSING LINE 1072
+// MISSING LINE 1073
+// MISSING LINE 1074
+// MISSING LINE 1075
+// MISSING LINE 1076
+// MISSING LINE 1077
+// MISSING LINE 1078
+// MISSING LINE 1079
+// MISSING LINE 1080
+// MISSING LINE 1081
+// MISSING LINE 1082
+// MISSING LINE 1083
+// MISSING LINE 1084
+// MISSING LINE 1085
+// MISSING LINE 1086
+// MISSING LINE 1087
+// MISSING LINE 1088
+// MISSING LINE 1089
+// MISSING LINE 1090
+// MISSING LINE 1091
+// MISSING LINE 1092
+// MISSING LINE 1093
+// MISSING LINE 1094
+// MISSING LINE 1095
+// MISSING LINE 1096
+// MISSING LINE 1097
+// MISSING LINE 1098
+// MISSING LINE 1099
+// MISSING LINE 1100
+// MISSING LINE 1101
+// MISSING LINE 1102
+// MISSING LINE 1103
+// MISSING LINE 1104
+// MISSING LINE 1105
+// MISSING LINE 1106
+// MISSING LINE 1107
+// MISSING LINE 1108
+// MISSING LINE 1109
+// MISSING LINE 1110
+// MISSING LINE 1111
+// MISSING LINE 1112
+// MISSING LINE 1113
+// MISSING LINE 1114
+// MISSING LINE 1115
+// MISSING LINE 1116
+// MISSING LINE 1117
+// MISSING LINE 1118
+// MISSING LINE 1119
+// MISSING LINE 1120
+// MISSING LINE 1121
+// MISSING LINE 1122
+// MISSING LINE 1123
+// MISSING LINE 1124
+// MISSING LINE 1125
+// MISSING LINE 1126
+// MISSING LINE 1127
+// MISSING LINE 1128
+// MISSING LINE 1129
+// MISSING LINE 1130
+// MISSING LINE 1131
+// MISSING LINE 1132
+// MISSING LINE 1133
+// MISSING LINE 1134
+// MISSING LINE 1135
+// MISSING LINE 1136
+// MISSING LINE 1137
+// MISSING LINE 1138
+// MISSING LINE 1139
+// MISSING LINE 1140
+// MISSING LINE 1141
+// MISSING LINE 1142
+// MISSING LINE 1143
+// MISSING LINE 1144
+// MISSING LINE 1145
+// MISSING LINE 1146
+// MISSING LINE 1147
+// MISSING LINE 1148
+// MISSING LINE 1149
+// MISSING LINE 1150
+// MISSING LINE 1151
+// MISSING LINE 1152
+// MISSING LINE 1153
+// MISSING LINE 1154
+// MISSING LINE 1155
+// MISSING LINE 1156
+// MISSING LINE 1157
+// MISSING LINE 1158
+// MISSING LINE 1159
+// MISSING LINE 1160
+// MISSING LINE 1161
+// MISSING LINE 1162
+// MISSING LINE 1163
+// MISSING LINE 1164
+// MISSING LINE 1165
+// MISSING LINE 1166
+// MISSING LINE 1167
+// MISSING LINE 1168
+// MISSING LINE 1169
+// MISSING LINE 1170
+// MISSING LINE 1171
+// MISSING LINE 1172
+// MISSING LINE 1173
+// MISSING LINE 1174
+// MISSING LINE 1175
+// MISSING LINE 1176
+// MISSING LINE 1177
+// MISSING LINE 1178
+// MISSING LINE 1179
               // ngatur buffering di sekitar timestamp target SEBELUM playback
               // mulai, jauh lebih reliable buat sumber m3u8 kayak Otakudesu/
               // Sokuja/NontonAnimeID kita.
@@ -1445,101 +1448,101 @@ export default function WatchClient() {
       // 720p) — kalau user pilih 1080p tapi Otakudesu cuma punya 720p, source
       // lain tetap ikut dipertimbangkan walau Otakudesu "berhasil".
       const otakudesuBest = qualities.length > 0 ? Math.max(...qualities) : 0
-      if (!otaku.ok || otakudesuBest < quality) {
-        const ms = await multiSourcePromise
-        if (isStale()) return
-        if (ms) {
-          const msBest = ms.qualities.length > 0 ? Math.max(...ms.qualities) : 0
-          if (!otaku.ok || msBest > otakudesuBest) {
-            iframe = ms.iframe
-            direct = ms.direct
-            qualities = ms.qualities
-            source = ms.source
-            referer = ms.referer
-          }
-        }
-      }
-
-      if (!iframe && !direct) {
-        if (!manualQuery) setIndoManual(animeInfoRef.current.title)
-        throw new Error('Link stream tidak ditemukan di semua source — coba refresh atau edit judul di bawah')
-      }
-
-      setDirectUrl(direct)
-      setIndoSrc(iframe)
-      setAvailableQualities(qualities)
-      setIndoSource(source)
-      setIndoReferer(referer)
-
-      indoResultCacheRef.current.set(cKey, {
-        iframe, direct, qualities, source, referer,
-        epTitle: otaku.epTitle, notice: otaku.notice,
-      })
-
-      // Fire-and-forget: siapin episode berikutnya di cache di background.
-      prefetchNextEpisode()
-    } catch (e: any) {
-      if (isStale()) return
-      setIndoError(e.message)
-    } finally {
-      if (!isStale()) setIndoLoading(false)
-    }
-  }
-
-  // ── Prefetch episode berikutnya, best-effort, gak nyentuh state komponen
-  // sama sekali (jadi gak ganggu render/loading indicator episode yang
-  // sedang ditonton). Cuma jalan kalau daftar episode Otakudesu-nya udah ada
-  // di ref (dari fetch sebelumnya) — biar gak perlu title-search lagi. ──
-  function prefetchNextEpisode() {
-    const nextEp = epNum + 1
-    const key = indoCacheKey(malId, nextEp, quality)
-    if (indoResultCacheRef.current.has(key) || prefetchedKeysRef.current.has(key)) return
-    prefetchedKeysRef.current.add(key)
-
-      ; (async () => {
-        try {
-          // Coba Otakudesu dulu (cepat — udah ada episode list di ref, gak
-          // perlu title-search lagi).
-          const epData = indoEpisodesRef.current.find(e => e.episode === nextEp)
-          if (epData?.url) {
-            const streamRes = await fetch(`/api/proxy/stream-indo?endpoint=stream&url=${encodeURIComponent(epData.url)}&quality=${quality}`)
-            const streamJson = await streamRes.json()
-            const iframe = streamJson.data?.iframe ?? null
-            const direct = streamJson.data?.directUrl ?? null
-            if (iframe || direct) {
-              indoResultCacheRef.current.set(key, {
-                iframe,
-                direct,
-                qualities: streamJson.data?.availableQualities ?? [],
-                source: 'otakudesu',
-                referer: null,
-                epTitle: epData.title ?? null,
-                notice: null,
-              })
-              return
-            }
-          }
-
-          // Fallback: Otakudesu gak punya episode berikutnya (atau episode
-          // list-nya belum ke-load — kejadian kalau source aktif sekarang
-          // emang dari multi-source, bukan Otakudesu). Tanpa ini, next-episode
-          // diam-diam gak ke-prefetch tiap kali nonton dari Sokuja/NontonAnimeID,
-          // dan klik "Next" balik lemot padahal seharusnya udah instant.
-          const title = animeInfoRef.current.title !== 'Unknown' ? animeInfoRef.current.title : ''
-          if (!title) return
-          const ms = await runMultiSourceLookup(title, nextEp, quality)
-          if (!ms || (!ms.iframe && !ms.direct)) return
-          indoResultCacheRef.current.set(key, {
-            iframe: ms.iframe,
-            direct: ms.direct,
-            qualities: ms.qualities,
-            source: ms.source,
-            referer: ms.referer,
-            epTitle: null,
-            notice: null,
-          })
-        } catch { /* best-effort, silent */ }
-      })()
+// MISSING LINE 1451
+// MISSING LINE 1452
+// MISSING LINE 1453
+// MISSING LINE 1454
+// MISSING LINE 1455
+// MISSING LINE 1456
+// MISSING LINE 1457
+// MISSING LINE 1458
+// MISSING LINE 1459
+// MISSING LINE 1460
+// MISSING LINE 1461
+// MISSING LINE 1462
+// MISSING LINE 1463
+// MISSING LINE 1464
+// MISSING LINE 1465
+// MISSING LINE 1466
+// MISSING LINE 1467
+// MISSING LINE 1468
+// MISSING LINE 1469
+// MISSING LINE 1470
+// MISSING LINE 1471
+// MISSING LINE 1472
+// MISSING LINE 1473
+// MISSING LINE 1474
+// MISSING LINE 1475
+// MISSING LINE 1476
+// MISSING LINE 1477
+// MISSING LINE 1478
+// MISSING LINE 1479
+// MISSING LINE 1480
+// MISSING LINE 1481
+// MISSING LINE 1482
+// MISSING LINE 1483
+// MISSING LINE 1484
+// MISSING LINE 1485
+// MISSING LINE 1486
+// MISSING LINE 1487
+// MISSING LINE 1488
+// MISSING LINE 1489
+// MISSING LINE 1490
+// MISSING LINE 1491
+// MISSING LINE 1492
+// MISSING LINE 1493
+// MISSING LINE 1494
+// MISSING LINE 1495
+// MISSING LINE 1496
+// MISSING LINE 1497
+// MISSING LINE 1498
+// MISSING LINE 1499
+// MISSING LINE 1500
+// MISSING LINE 1501
+// MISSING LINE 1502
+// MISSING LINE 1503
+// MISSING LINE 1504
+// MISSING LINE 1505
+// MISSING LINE 1506
+// MISSING LINE 1507
+// MISSING LINE 1508
+// MISSING LINE 1509
+// MISSING LINE 1510
+// MISSING LINE 1511
+// MISSING LINE 1512
+// MISSING LINE 1513
+// MISSING LINE 1514
+// MISSING LINE 1515
+// MISSING LINE 1516
+// MISSING LINE 1517
+// MISSING LINE 1518
+// MISSING LINE 1519
+// MISSING LINE 1520
+// MISSING LINE 1521
+// MISSING LINE 1522
+// MISSING LINE 1523
+// MISSING LINE 1524
+// MISSING LINE 1525
+// MISSING LINE 1526
+// MISSING LINE 1527
+// MISSING LINE 1528
+// MISSING LINE 1529
+        // dan klik "Next" balik lemot padahal seharusnya udah instant.
+        const title = animeInfoRef.current.title !== 'Unknown' ? animeInfoRef.current.title : ''
+        if (!title) return
+        const ms = await runMultiSourceLookup(title, nextEp, quality)
+        if (!ms || (!ms.iframe && !ms.direct)) return
+        indoResultCacheRef.current.set(key, {
+          iframe: ms.iframe,
+          direct: ms.direct,
+          qualities: ms.qualities,
+          source: ms.source,
+          referer: ms.referer,
+          epTitle: null,
+          notice: null,
+        })
+      } catch { /* best-effort, silent */ }
+    })()
   }
 
   // ── Download click handler ────────────────────────────────────────────────
@@ -1694,6 +1697,25 @@ export default function WatchClient() {
                   setDuration(e.currentTarget.duration)
                   if (Number.isFinite(e.currentTarget.duration)) {
                     actualDurationRef.current = e.currentTarget.duration
+                onLoadedData={handleIframeLoad}
+                onError={handleDirectVideoError}
+                onPlay={() => setIsPlaying(true)}
+                onPause={() => {
+                  setIsPlaying(false)
+                  savePosition(malId, epNum, currentTimeRef.current, actualDurationRef.current)
+                }}
+                onWaiting={() => setIsBuffering(true)}
+                onPlaying={() => setIsBuffering(false)}
+                onSeeked={() => setIsBuffering(false)}
+                onCanPlay={() => setIsBuffering(false)}
+                onTimeUpdate={e => {
+                  setCurrentTime(e.currentTarget.currentTime)
+                  currentTimeRef.current = e.currentTarget.currentTime
+                }}
+                onLoadedMetadata={e => {
+                  setDuration(e.currentTarget.duration)
+                  if (Number.isFinite(e.currentTarget.duration)) {
+                    actualDurationRef.current = e.currentTarget.duration
                   }
                   seekToResume()
                 }}
@@ -1706,47 +1728,28 @@ export default function WatchClient() {
               {/* Tap/Double-Tap Zones overlay */}
               <div className="absolute inset-0 z-[2] flex select-none touch-manipulation">
                 {/* Left side */}
-                <div
+                <div 
                   className="w-1/2 h-full relative cursor-pointer"
-                  onClick={handleLeftClick}
+}
                 >
                   {showLeftSkipAnim && (
                     <div className="absolute left-0 top-0 w-full h-full bg-gradient-to-r from-white/10 to-transparent pointer-events-none flex flex-col items-center justify-center z-10 animate-fade-in-out">
                       <div className="flex items-center justify-center gap-0.5">
                         <ChevronLeft className="w-5 h-5 text-white animate-bounce-left" />
                         <ChevronLeft className="w-5 h-5 text-white animate-bounce-left delay-75" />
-                        <ChevronLeft className="w-5 h-5 text-white animate-bounce-left delay-150" />
-                      </div>
-                      <span className="text-[10px] font-black text-white uppercase tracking-wider mt-1">-10 Detik</span>
-                    </div>
-                  )}
-                </div>
+              )}
+            </div>
 
-                {/* Right side */}
-                <div
-                  className="w-1/2 h-full relative cursor-pointer"
-                  onClick={handleRightClick}
-                >
-                  {showRightSkipAnim && (
-                    <div className="absolute right-0 top-0 w-full h-full bg-gradient-to-l from-white/10 to-transparent pointer-events-none flex flex-col items-center justify-center z-10 animate-fade-in-out">
-                      <div className="flex items-center justify-center gap-0.5">
-                        <ChevronRight className="w-5 h-5 text-white animate-bounce-right" />
-                        <ChevronRight className="w-5 h-5 text-white animate-bounce-right delay-75" />
-                        <ChevronRight className="w-5 h-5 text-white animate-bounce-right delay-150" />
-                      </div>
-                      <span className="text-[10px] font-black text-white uppercase tracking-wider mt-1">+10 Detik</span>
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              {/* Lag/Buffering Spinner overlay */}
-              {isBuffering && (
-                <div className="absolute inset-0 z-[4] flex items-center justify-center bg-black/25 pointer-events-none">
-                  <div className="relative">
-                    <div className="w-16 h-16 rounded-full border-4 border-emerald-500/20 border-t-emerald-500 animate-spin" />
-                    <div className="absolute inset-0 flex items-center justify-center">
-                      <Loader2 className="w-6 h-6 text-emerald-400 animate-spin" />
+            {/* Footer */}
+            <div className="text-[10px] text-zinc-500 leading-relaxed bg-[#0d0d1a] p-3 rounded-2xl border border-white/5 shrink-0">
+              ⚠️ Link download disediakan oleh pihak ketiga. Beberapa link mungkin memiliki iklan pop-up atau memerlukan bypass. Kami menyarankan menggunakan ad-blocker.
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
                     </div>
                   </div>
                 </div>
@@ -1805,6 +1808,25 @@ export default function WatchClient() {
                   </div>
                 </div>
               )}
+
+              <div
+                className={`absolute inset-0 z-[10] transition-opacity duration-200 ${showControls ? 'opacity-100' : 'opacity-0 pointer-events-none'} pointer-events-none`}
+              >
+                <div className="absolute inset-x-0 top-0 h-16 bg-gradient-to-b from-black/70 to-transparent pointer-events-none" />
+
+                {/* Center row: prev ep / -10s / play-pause / +10s / next ep */}
+                <div className="absolute inset-0 flex items-center justify-center gap-4 md:gap-8 px-4 pointer-events-none">
+                  <button
+                    onClick={e => { e.stopPropagation(); goToEpisode(prevHref) }}
+                    disabled={!canGoPrev}
+                    aria-label="Episode sebelumnya"
+                    className="flex flex-col items-center gap-1 text-white disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer pointer-events-auto"
+                  >
+                    <SkipBack className="w-7 h-7 md:w-8 md:h-8" fill="currentColor" aria-hidden="true" />
+                    {canGoPrev && <span className="text-[11px] font-semibold">Episode {epNum - 1}</span>}
+                  </button>
+
+                  <button
 
               <div
                 className={`absolute inset-0 z-[10] transition-opacity duration-200 ${showControls ? 'opacity-100' : 'opacity-0 pointer-events-none'} pointer-events-none`}
@@ -1891,38 +1913,31 @@ export default function WatchClient() {
                       </button>
                       <button
                         onClick={e => { e.stopPropagation(); toggleFullscreen() }}
-                        aria-label={isFullscreen ? 'Keluar Layar Penuh' : 'Layar Penuh'}
-                        className="cursor-pointer hover:text-emerald-300 transition-colors"
-                      >
-                        <Maximize className="w-4 h-4 md:w-5 md:h-5" aria-hidden="true" />
-                      </button>
-                    </div>
-                  </div>
-
-                  <input
-                    type="range"
-                    min={0}
-                    max={duration || 0}
-                    step={0.1}
-                    value={currentTime}
-                    onChange={handleSeekBarChange}
-                    onClick={e => e.stopPropagation()}
-                    aria-label="Seek video"
-                    className="w-full h-1.5 rounded-full appearance-none cursor-pointer accent-red-500"
-                    style={{
-                      background: duration
-                        ? `linear-gradient(to right, #ef4444 ${(currentTime / duration) * 100}%, rgba(255,255,255,0.3) ${(currentTime / duration) * 100}%)`
-                        : 'rgba(255,255,255,0.3)',
-                    }}
-                  />
-                </div>
-              </div>
-            </>
-          ) : (
-            <iframe
-              key={iframeKey}
-              ref={iframeRef}
-              src={currentSrc ?? undefined}
+                        aria-label={            {prevHref ? (
+              <Link
+                href={prevHref}
+                onClick={e => { e.preventDefault(); goToEpisode(epNum - 1) }}
+                className="flex items-center gap-2 px-4 py-2.5 rounded-xl border text-xs font-bold transition-all active:scale-95
+                  bg-gradient-to-r from-emerald-600/10 to-transparent border-emerald-500/20 text-emerald-300
+                  hover:from-emerald-600/20 hover:border-emerald-400/40 hover:text-white focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none"
+              >
+                <ChevronLeft className="w-4 h-4" aria-hidden="true" />
+                Ep {epNum - 1}
+              </Link>
+            ) : <div />}
+ 
+            {nextHref ? (
+              <Link
+                href={nextHref}
+                onClick={e => { e.preventDefault(); goToEpisode(epNum + 1) }}
+                className="flex items-center gap-2 px-4 py-2.5 rounded-xl border text-xs font-bold transition-all active:scale-95 ml-auto
+                  bg-gradient-to-l from-teal-600/10 to-transparent border-teal-500/20 text-teal-300
+                  hover:from-teal-600/20 hover:border-teal-400/40 hover:text-white focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none"
+              >
+                Ep {epNum + 1}
+                <ChevronRight className="w-4 h-4" aria-hidden="true" />
+              </Link>
+            ) : <div />}  src={currentSrc ?? undefined}
               onLoad={handleIframeLoad}
               title={`${animeDetails?.title || 'Anime'} - Episode ${epNum}`}
               className="absolute inset-0 w-full h-full"
@@ -1963,6 +1978,13 @@ export default function WatchClient() {
                   bg-gradient-to-r from-emerald-600/10 to-transparent border-emerald-500/20 text-emerald-300
                   hover:from-emerald-600/20 hover:border-emerald-400/40 hover:text-white focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none"
               >
+            {prevHref ? (
+              <Link
+                href={prevHref}
+                className="flex items-center gap-2 px-4 py-2.5 rounded-xl border text-xs font-bold transition-all active:scale-95
+                  bg-gradient-to-r from-emerald-600/10 to-transparent border-emerald-500/20 text-emerald-300
+                  hover:from-emerald-600/20 hover:border-emerald-400/40 hover:text-white focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none"
+              >
                 <ChevronLeft className="w-4 h-4" aria-hidden="true" />
                 Ep {epNum - 1}
               </Link>
@@ -1981,25 +2003,6 @@ export default function WatchClient() {
             ) : <div />}
           </div>
         )}
-
-        {/* ── 3. Server Selector ── */}
-        <div className="bg-[#0d0d1a] border border-white/5 p-4 rounded-2xl flex flex-col gap-3 mx-4 md:mx-0">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <div className="w-1.5 h-4 rounded-full bg-gradient-to-b from-emerald-500 to-teal-500" />
-              <span className="text-[10px] font-extrabold text-zinc-300 uppercase tracking-widest">Pilih Server</span>
-            </div>
-            {server === 'indo' && indoEpTitle && (
-              <span className="flex items-center gap-1.5 min-w-0">
-                <span className="text-[10px] text-emerald-400/80 font-medium truncate max-w-[180px]">
-                  {indoEpTitle}
-                </span>
-                {indoSource !== 'otakudesu' && (
-                  <span className="text-[9px] font-bold text-teal-300 bg-teal-500/10 border border-teal-500/20 px-1.5 py-0.5 rounded-full whitespace-nowrap shrink-0">
-                    via {SOURCE_LABELS[indoSource] ?? indoSource}
-                  </span>
-                )}
-              </span>
             )}
           </div>
 
@@ -2289,6 +2292,25 @@ export default function WatchClient() {
                         : isEpWatched
                           ? 'bg-emerald-950/50 text-emerald-400 border border-emerald-800/40 hover:border-emerald-500/60 hover:text-emerald-300'
                           : 'bg-[#0a0a12] text-zinc-550 border border-white/5 hover:text-white hover:border-white/10 hover:bg-white/5'
+              <Loader2 className="w-4 h-4 animate-spin mr-2" aria-hidden="true" /> Memuat episode…
+            </div>
+          ) : (
+            <div data-lenis-prevent className="flex items-center gap-2 overflow-x-auto scrollbar-hide py-1 -mx-1 px-1">
+              {episodeList.map((ep) => {
+                const isCurrent = ep.number === epNum
+                const isEpWatched = watchedEpNumbers.includes(ep.number)
+
+                return (
+                  <Link
+                    key={`ep-box-${ep.number}`}
+                    href={`/watch/${malId}/${ep.number}`}
+                    title={`Episode ${ep.number}`}
+                    className={`w-10 h-10 rounded-xl flex-shrink-0 flex items-center justify-center font-bold text-xs transition-all hover:scale-105 active:scale-95
+                      ${isCurrent
+                        ? 'bg-gradient-to-br from-emerald-600 to-teal-600 text-white shadow-lg shadow-emerald-500/30 ring-2 ring-emerald-400/20'
+                        : isEpWatched
+                          ? 'bg-emerald-950/50 text-emerald-400 border border-emerald-800/40 hover:border-emerald-500/60 hover:text-emerald-300'
+                          : 'bg-[#0a0a12] text-zinc-550 border border-white/5 hover:text-white hover:border-white/10 hover:bg-white/5'
                       }`}
                   >
                     {ep.number}
@@ -2301,25 +2323,6 @@ export default function WatchClient() {
           <div className="flex items-center gap-4 text-[10px] text-zinc-650 font-semibold">
             <span className="flex items-center gap-1.5">
               <span className="w-2.5 h-2.5 rounded bg-gradient-to-br from-emerald-600 to-teal-600 inline-block" />
-              Sedang ditonton
-            </span>
-            <span className="flex items-center gap-1.5">
-              <span className="w-2.5 h-2.5 rounded bg-emerald-950/50 border border-emerald-800/40 inline-block" />
-              Sudah ditonton
-            </span>
-          </div>
-        </div>
-
-        {/* ── 8. Community Notice ── */}
-        <div className="flex items-center gap-2 py-2.5 px-3.5 rounded-xl bg-[#0d0d1a] border border-white/5 mx-4 md:mx-0">
-          <span className="text-base select-none">💬</span>
-          <p className="text-[11px] text-zinc-550 leading-relaxed font-semibold">
-            Berkomentarlah dengan sopan dan ikuti{' '}
-            <Link href="/rules" className="text-emerald-400 hover:text-emerald-300 font-bold transition-colors">
-              aturan komunitas
-            </Link>{' '}
-            kami.
-          </p>
         </div>
 
         {/* ── 9. Comments ── */}
@@ -2410,7 +2413,7 @@ export default function WatchClient() {
               ⚠️ Link download disediakan oleh pihak ketiga. Beberapa link mungkin memiliki iklan pop-up atau memerlukan bypass. Kami menyarankan menggunakan ad-blocker.
             </div>
           </div>
-        </div>
+        </div>                            
       )}
     </div>
   )

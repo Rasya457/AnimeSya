@@ -1,6 +1,6 @@
 import { Suspense } from 'react'
 import { notFound } from 'next/navigation'
-import { animeApi } from '@/lib/anime-api'
+import { animeApi, AnimeNotIndexedError } from '@/lib/anime-api'
 import DetailClient from './DetailClient'
 
 // ISR: halaman di-cache dan diperbarui otomatis setiap 1 jam di background
@@ -42,7 +42,22 @@ export default async function AnimeDetailPage({ params }: Props) {
   let anime
   try {
     anime = await animeApi.detail(slug)
-  } catch {
+  } catch (err) {
+    // Anime baru rilis & belum ke-index di MAL/Jikan → kasih pesan yang
+    // jelas ke user, bukan 404 generik yang bikin bingung "kok ga ada".
+    if (err instanceof AnimeNotIndexedError) {
+      return (
+        <div className="min-h-screen bg-zinc-950 flex items-center justify-center px-4">
+          <div className="text-center max-w-md">
+            <h1 className="text-xl font-bold text-white mb-2">Anime ini belum tersedia</h1>
+            <p className="text-sm text-zinc-400">
+              Sepertinya anime ini baru banget rilis dan datanya belum ke-index
+              di database kami. Coba cek lagi dalam beberapa hari ya.
+            </p>
+          </div>
+        </div>
+      )
+    }
     notFound()
   }
 

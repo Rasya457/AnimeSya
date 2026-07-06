@@ -94,3 +94,34 @@ html.lenis body {
 .lenis.lenis-scrolling iframe {
   pointer-events: none;
 }
+
+/* Custom video player double-tap and buffering animations */
+@keyframes fade-in-out {
+  0% { opacity: 0; }
+  20% { opacity: 1; }
+  80% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+@keyframes bounce-left {
+  0%, 100% { transform: translateX(0); opacity: 0.3; }
+  50% { transform: translateX(-4px); opacity: 1; }
+}
+
+@keyframes bounce-right {
+  0%, 100% { transform: translateX(0); opacity: 0.3; }
+  50% { transform: translateX(4px); opacity: 1; }
+}
+
+.animate-fade-in-out {
+  animation: fade-in-out 0.6s ease-in-out forwards;
+}
+
+.animate-bounce-left {
+  animation: bounce-left 0.6s ease-in-out infinite;
+}
+
+.animate-bounce-right {
+  animation: bounce-right 0.6s ease-in-out infinite;
+}
+

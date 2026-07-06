@@ -9,6 +9,7 @@ import { Badge } from '@/components/ui/Badge'
 import AnimeRow from '@/components/anime/AnimeRow'
 import type { AnimeListItem } from '@/types/anime'
 import { getHistoryKey } from '@/lib/historyKey'
+import { loadPositionPercent } from '@/lib/watchPosition'
 
 const SCROLL_BTN =
   'w-6 h-6 rounded-full bg-zinc-900 border border-zinc-800 ' +
@@ -24,6 +25,75 @@ export interface HistoryItem {
   progress?:        number        // seek position 0–100
   totalEpisodes?:   number
   watchedEpisodes?: number[]
+}
+
+// Shuffle deterministik berbasis seed (misal tanggal) — biar urutan row
+// "acak" tapi stabil sepanjang hari itu (gak lompat-lompat tiap re-render
+// atau tiap pindah halaman terus balik lagi).
+function seededShuffle<T>(arr: T[], seed: string): T[] {
+  const a = [...arr]
+  let h = 0
+  for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) >>> 0
+  const rand = () => {
+    h = (h * 1664525 + 1013904223) >>> 0
+    return h / 4294967296
+  }
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(rand() * (i + 1))
+    ;[a[i], a[j]] = [a[j], a[i]]
+  }
+  return a
+}
+
+// Fetch daftar anime by genre dari /api/proxy/genre/[genreId] — dipakai buat
+// row "Rekomendasi Romance" & "Rekomendasi Action". Beda dari romanceAnime
+// versi lama yang nyaring dari `ongoing`+`completed` (yang datanya emang gak
+// punya field genre sama sekali dari /home), endpoint genre ini scrape
+// langsung halaman /genres/{slug}/ Otakudesu jadi hasilnya jauh lebih lengkap.
+// Fetch 2 genre sekaligus secara paralel — lebih cepat dari 2 hook terpisah
+// (dulu race condition: kedua fetch jalan di waktu berbeda, sekarang 1 Promise.all)
+function useGenresAnime(genreIds: string[], excludeIds: Set<string>) {
+  const [rawMap, setRawMap] = useState<Record<string, any[]>>({})
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    let cancelled = false
+    setLoading(true)
+    ;(async () => {
+      try {
+        const results = await Promise.all(
+          genreIds.map(id =>
+            fetch(`/api/proxy/genre/${id}?page=1`)
+              .then(r => r.json())
+              .then(j => ({ id, data: Array.isArray(j?.data) ? j.data : [] }))
+              .catch(() => ({ id, data: [] }))
+          )
+        )
+        if (cancelled) return
+        const map: Record<string, any[]> = {}
+        for (const { id, data } of results) map[id] = data
+        setRawMap(map)
+      } catch {
+        if (!cancelled) setRawMap({})
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    })()
+    return () => { cancelled = true }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [genreIds.join(',')])
+
+  const lists = useMemo(() => {
+    const todayDate = new Date().toISOString().slice(0, 10)
+    const result: Record<string, any[]> = {}
+    for (const id of genreIds) {
+      const pool = (rawMap[id] ?? []).filter((a: any) => a?.animeId && !excludeIds.has(a.animeId))
+      result[id] = seededShuffle(pool, `${todayDate}-${id}`).slice(0, 30)
+    }
+    return result
+  }, [rawMap, excludeIds, genreIds])
+
+  return { lists, loading }
 }
 
 function useDragScroll(scrollPx = 320) {
@@ -156,32 +226,20 @@ export default function HomeClient({ ongoing, completed }: HomeClientProps) {
 
   useEffect(() => { setBookmarked(false) }, [heroIdx])
 
-  const animeList = useMemo(() => {
-    const seen = new Set<string>()
-    return [...ongoing, ...completed].filter((a) => {
-      if (seen.has(a.animeId)) return false
-      seen.add(a.animeId)
-      return true
-    })
-  }, [ongoing, completed])
+  // Urutan `ongoing` sudah sesuai urutan update terbaru dari scraper Otakudesu
+  // (paling atas = paling baru di-update). Jangan diacak lagi supaya jadwal
+  // "New Update" di homepage konsisten sama jadwal asli Otakudesu/Sokuja.
+  const newUpdateAnime = useMemo(() => ongoing.slice(0, 20), [ongoing])
 
-  const newUpdateAnime = useMemo(() => {
-    const top30 = ongoing.slice(0, 30)
-    const seed = Math.floor(Date.now() / (1000 * 60 * 10))
-    const shuffled = [...top30].sort((a, b) => {
-      const ha = ((a as any).animeId?.charCodeAt(0) ?? 0) ^ seed
-      const hb = ((b as any).animeId?.charCodeAt(0) ?? 0) ^ seed
-      return ha - hb
-    })
-    return shuffled.slice(0, 20)
-  }, [ongoing])
+  // Id yang udah ada di "Terakhir Ditonton" — dipakai buat exclude dari kedua
+  // row rekomendasi di bawah, biar gak nyaranin ulang anime yang lagi/udah
+  // ditonton.
+  const historyIds = useMemo(() => new Set(history.map(h => h.malId)), [history])
 
-  const romanceAnime = useMemo(() =>
-    animeList
-      .filter((a: any) => a.genres?.some((g: string) => g.toLowerCase() === 'romance'))
-      .slice(0, 20),
-    [animeList]
-  )
+  const GENRE_IDS = useMemo(() => ['romance', 'action'], [])
+  const { lists: genreLists } = useGenresAnime(GENRE_IDS, historyIds)
+  const romanceAnime = genreLists['romance'] ?? []
+  const actionAnime  = genreLists['action']  ?? []
 
   if (!currentHero) return null
 
@@ -195,10 +253,12 @@ export default function HomeClient({ ongoing, completed }: HomeClientProps) {
       >
         <div className="absolute inset-0">
           {heroList.map((a, i) => (
-            <div
+            <Link
               key={a.animeId ?? i}
+              href={`/anime/${a.animeId}`}
+              aria-label={a.title ?? 'Lihat detail anime'}
               className="absolute inset-0 transition-opacity duration-500"
-              style={{ opacity: i === heroIdx ? 1 : 0 }}
+              style={{ opacity: i === heroIdx ? 1 : 0, pointerEvents: i === heroIdx ? 'auto' : 'none' }}
             >
               <Image
                 src={a.poster ?? ''}
@@ -208,7 +268,7 @@ export default function HomeClient({ ongoing, completed }: HomeClientProps) {
                 priority={i === 0}
                 className="object-cover object-top"
               />
-            </div>
+            </Link>
           ))}
           <div className="absolute inset-0 bg-gradient-to-r from-zinc-950/90 via-zinc-950/50 to-transparent" />
           <div className="absolute inset-0 bg-gradient-to-t from-zinc-950 via-zinc-950/20 to-transparent" />
@@ -347,6 +407,13 @@ export default function HomeClient({ ongoing, completed }: HomeClientProps) {
           <AnimeRow title="Rekomendasi Romance" animeList={romanceAnime} />
         </section>
       )}
+
+      {/* ══ 6. REKOMENDASI ACTION ════════════════════════════════ */}
+      {actionAnime.length > 0 && (
+        <section className="w-full">
+          <AnimeRow title="Rekomendasi Action" animeList={actionAnime} />
+        </section>
+      )}
     </div>
   )
 }
@@ -355,6 +422,12 @@ function HistoryCard({ item, onRemove }: { item: HistoryItem; onRemove: (malId: 
   const watchedCount = item.watchedEpisodes?.length ?? 1
 
   const effectiveProgress = (() => {
+    // Prioritas #1: posisi detik akurat (seconds/duration) dari server 'indo'
+    // — ini sumber paling presisi karena langsung dari currentTime video-nya,
+    // sama persis yang dipakai buat resume-exact di halaman nonton.
+    const accurate = loadPositionPercent(item.malId, item.episode)
+    if (accurate != null) return accurate >= 95 ? 100 : accurate
+
     if (item.progress != null && item.progress > 0) {
       const pct = item.progress <= 1
         ? Math.round(item.progress * 100)

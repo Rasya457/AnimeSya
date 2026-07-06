@@ -22,13 +22,14 @@
 
 import * as cheerio from 'cheerio'
 import { Agent, fetch as undiciFetch } from 'undici'
+import { samehadakuAdapter } from '@/lib/adapters/samehadaku'
 
 export const runtime = 'nodejs'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Mirror list — otakudesu.blog (classic) & otakudesu.fit (Animestream/Tsun theme)
 // ─────────────────────────────────────────────────────────────────────────────
-const MIRRORS: readonly string[] = [
+export const MIRRORS: readonly string[] = [
     // otakudesu.cloud (mirror lama) sekarang full-redirect ke otakudesu.blog —
     // dicek langsung per 18 Jun 2026, request ke otakudesu.cloud/anime/... balik
     // dengan destination_url otakudesu.blog/anime/.... Masih bisa dipakai (fetch
@@ -140,7 +141,7 @@ async function dohResolve(hostname: string): Promise<string | null> {
             ),
             3_000
         )
-        _dohCache.set(hostname, { ip, expiresAt: Date.now() + 5 * 60 * 1000 })
+        _dohCache.set(hostname, { ip, expiresAt: Date.now() + 60 * 60 * 1000 })
         return ip
     } catch {
         return null
@@ -191,6 +192,24 @@ const HTML_HDRS: Record<string, string> = {
 interface SearchResult { title: string; url: string; thumb: string }
 interface EpisodeEntry { episode: number; title: string; url: string }
 interface MirrorOption { label: string; quality: string; content: Record<string, unknown> }
+
+// Metadata halaman detail anime (title/poster/sinopsis/genre/dll). Selector-nya
+// BEST-GUESS — lihat catatan lengkap di parseAnimeInfo().
+interface AnimeInfo {
+    title: string
+    poster: string | null
+    sinopsis: string | null
+    genres: string[]
+    status: string | null
+    studio: string | null
+    tipe: string | null
+    totalEpisode: string | null
+    durasi: string | null
+    tanggalRilis: string | null
+    skor: string | null
+    produser: string | null
+    japanese: string | null
+}
 interface StreamResult {
     iframe: string | null
     directUrl: string | null
@@ -310,7 +329,7 @@ async function fetchSingleUrl(url: string): Promise<string> {
     return html
 }
 
-async function scrapeHtml(url: string): Promise<{ $: cheerio.CheerioAPI; html: string; base: string }> {
+export async function scrapeHtml(url: string): Promise<{ $: cheerio.CheerioAPI; html: string; base: string }> {
     const candidates = MIRRORS.map(mirror => ({
         base: mirror,
         url: mapUrlForMirror(url, mirror)
@@ -527,6 +546,101 @@ function parseEpisodes(html: string, base: string): EpisodeEntry[] {
         lastKnown += 1
         return { ...ep, episode: lastKnown }
     })
+}
+
+/**
+ * Parse anime detail metadata (title/poster/sinopsis/genre/status/studio/dll)
+ * from the SAME detail-page HTML that parseEpisodes() already consumes —
+ * no extra fetch needed, scrapeHtml(animeUrl) already pulls the full page.
+ *
+ * ⚠️ BEST-GUESS SELECTORS — belum diverifikasi live di codebase ini, beda
+ * sama parseEpisodes() yang selector-nya (.episodelist / .eplister) udah
+ * kebukti jalan. Pola di bawah ngikutin struktur umum tema WordPress
+ * Otakudesu (.infozingle buat key-value info, .fotoanime buat poster,
+ * .sinopc buat sinopsis) tapi WAJIB di-cross-check dulu lewat
+ * ?endpoint=debug-anime-info sebelum dipasang ke halaman detail production.
+ * Kalau ada field yang selector-nya meleset, dia cuma balik null/[] —
+ * gak throw — biar gak numbangin resolveEpisodeList() yang jalan bareng.
+ */
+function parseAnimeInfo(html: string, base: string): AnimeInfo | null {
+    const $ = cheerio.load(html)
+
+    // Title — beberapa kandidat heading dulu, fallback ke <title> tag
+    const title =
+        $('.jdlrx h1').first().text().trim() ||
+        $('h1.jdlrx').first().text().trim() ||
+        $('.infozingle h1').first().text().trim() ||
+        $('h1').first().text().trim() ||
+        $('title').first().text().replace(/\s*[-|].*$/, '').trim()
+
+    // Kalau title aja gagal ke-parse, kemungkinan besar ini bukan halaman
+    // detail anime (mirror kena redirect ke 404/halaman lain) — bail early
+    // drpd ngebalikin object kosong yang keliatan "berhasil" padahal enggak.
+    if (!title) return null
+
+    // Poster
+    let poster: string | null =
+        $('.fotoanime img').first().attr('src') ??
+        $('.venz .thumb img').first().attr('src') ??
+        $('.thumb img').first().attr('src') ??
+        $('meta[property="og:image"]').attr('content') ??
+        null
+    if (poster && !poster.startsWith('http')) {
+        poster = poster.startsWith('/') ? `${base}${poster}` : `${base}/${poster}`
+    }
+
+    // Sinopsis — gabung semua <p> di container sinopsis
+    const sinopsisParts: string[] = []
+    $('.sinopc p, .venser .sinopc p, .sinopsis p').each((_, el) => {
+        const t = $(el).text().trim()
+        if (t) sinopsisParts.push(t)
+    })
+    const sinopsis = sinopsisParts.length > 0 ? sinopsisParts.join('\n\n') : null
+
+    // Key-value fields dari .infozingle p — format umum tema Otakudesu:
+    // <p><span>Label</span>: Value</p>. Genre biasanya barisnya isi <a> list
+    // drpd plain text, jadi ditangani terpisah.
+    const fields: Record<string, string> = {}
+    const genres: string[] = []
+    $('.infozingle p').each((_, el) => {
+        const $el = $(el)
+        const rawText = $el.text().replace(/\s+/g, ' ').trim()
+        const firstColon = rawText.indexOf(':')
+        if (firstColon === -1) return
+
+        const label = rawText.substring(0, firstColon).trim().toLowerCase()
+        if (label.startsWith('genre')) {
+            $el.find('a').each((_, a) => {
+                const g = $(a).text().trim()
+                if (g) genres.push(g)
+            })
+            return
+        }
+
+        const value = rawText.substring(firstColon + 1).trim()
+        if (value) fields[label] = value
+    })
+
+    const pick = (...keys: string[]): string | null => {
+        for (const k of keys) if (fields[k]) return fields[k]
+        return null
+    }
+
+    return {
+        title,
+        poster,
+        sinopsis,
+        genres,
+        status: pick('status'),
+        studio: pick('studio'),
+        tipe: pick('tipe', 'type'),
+        totalEpisode: pick('total episode', 'total ep'),
+        durasi: pick('durasi'),
+        tanggalRilis: pick('tanggal rilis', 'rilis'),
+        skor: pick('skor', 'score'),
+        produser: pick('produser', 'producer'),
+        japanese: pick('japanese'),
+    }
 }
 
 // Some older Otakudesu BD/batch uploads accidentally list a pure
@@ -1100,6 +1214,10 @@ async function wajikSearch(q: string): Promise<SearchResult[] | null> {
 interface ConsumetSource { url: string; quality: string; isM3U8: boolean }
 interface ConsumetEpisode { id: string; number: number; title?: string }
 interface ConsumetStreamResult { sources?: ConsumetSource[]; subtitles?: Array<{ lang: string; url: string }> }
+interface ConsumetAnimeInfo {
+    title?: { romaji?: string; english?: string; native?: string }
+    episodes?: ConsumetEpisode[]
+}
 
 /** Resolve AniList ID from a MAL ID via AniList GraphQL. Cached for 24 h (ID never changes). */
 async function anilistIdFromMalId(malId: string): Promise<number | null> {
@@ -1130,31 +1248,60 @@ async function anilistIdFromMalId(malId: string): Promise<number | null> {
     }
 }
 
-/** Fetch episode list from Consumet and return the episode ID for `episodeNum`. */
-async function consumetFindEpisodeId(anilistId: number, episodeNum: number): Promise<string | null> {
-    const cacheKey = `consumet-eps:${anilistId}`
-    let episodes = cacheGet<ConsumetEpisode[]>(cacheKey)
+// Below this, a Consumet-side title match is trusted. Below CROSS_SOURCE_TITLE_THRESHOLD's
+// spirit but kept separate/lower since AniList's own title strings (romaji/english/native)
+// tend to be cleaner than scraped card titles, so matches against them can afford to be
+// a bit stricter without the "no" / short-word noise scraped titles have.
+const CONSUMET_TITLE_MIN_SCORE = 0.5
 
-    if (!episodes) {
+/**
+ * Fetch anime info from Consumet and return the episode ID for `episodeNum` —
+ * but ONLY if the anime Consumet actually resolved (via its own internal
+ * fuzzy search against the zoro/HiAnime provider) is a decent title match
+ * for what we asked for. Consumet's `/meta/anilist/info/:id` doesn't use a
+ * real AniList->provider ID mapping under the hood — Zoro has no such
+ * mapping — so it silently does its own title search and returns whatever
+ * it thinks is closest. For movies/short titles that can land on a
+ * completely different anime while still returning a 200 with real-looking
+ * episode data, which is exactly how "Koe no Katachi" was serving the
+ * wrong video even after the Otakudesu-side fix: this path was never
+ * checked at all, and it wins over Otakudesu whenever it succeeds.
+ */
+async function consumetFindEpisodeId(
+    anilistId: number,
+    episodeNum: number,
+    expectedTitle: string
+): Promise<string | null> {
+    const cacheKey = `consumet-info:${anilistId}`
+    let info = cacheGet<ConsumetAnimeInfo>(cacheKey)
+
+    if (!info) {
         try {
             const res = await withTimeout(
                 fetch(`${CONSUMET_BASE}/meta/anilist/info/${anilistId}?provider=zoro`, {
-
-
                     headers: { Accept: 'application/json' },
                     cache: 'no-store',
                 }),
                 CONSUMET_TIMEOUT_MS
             )
             if (!res.ok) return null
-            const json = await res.json() as { episodes?: ConsumetEpisode[] }
-            episodes = json.episodes ?? []
-            if (episodes.length > 0) cacheSet(cacheKey, episodes, 30 * 60 * 1000)
+            info = await res.json() as ConsumetAnimeInfo
+            if ((info.episodes?.length ?? 0) > 0) cacheSet(cacheKey, info, 30 * 60 * 1000)
         } catch {
             return null
         }
     }
 
+    const candidateTitles = [info.title?.english, info.title?.romaji, info.title?.native].filter(
+        (t): t is string => !!t
+    )
+    // No title in the response at all — can't validate, so don't trust it blindly.
+    if (candidateTitles.length === 0) return null
+
+    const bestScore = Math.max(...candidateTitles.map(t => titleSimilarity(t, expectedTitle)))
+    if (bestScore < CONSUMET_TITLE_MIN_SCORE) return null
+
+    const episodes = info.episodes ?? []
     return episodes.find(e => e.number === episodeNum)?.id ?? null
 }
 
@@ -1165,7 +1312,7 @@ async function consumetFindEpisodeId(anilistId: number, episodeNum: number): Pro
  * Calling convention: always wrap in .catch(() => null) at the call site so a
  * transient Consumet outage never breaks the Otakudesu fallback path.
  */
-async function consumetFetchStreamUrl(malId: string, episodeNum: number): Promise<string | null> {
+async function consumetFetchStreamUrl(malId: string, episodeNum: number, expectedTitle: string): Promise<string | null> {
     if (!CONSUMET_ENABLED) return null
 
     const cacheKey = `consumet-url:${malId}:${episodeNum}`
@@ -1175,7 +1322,7 @@ async function consumetFetchStreamUrl(malId: string, episodeNum: number): Promis
     const anilistId = await anilistIdFromMalId(malId)
     if (!anilistId) return null
 
-    const episodeId = await consumetFindEpisodeId(anilistId, episodeNum)
+    const episodeId = await consumetFindEpisodeId(anilistId, episodeNum, expectedTitle)
     if (!episodeId) return null
 
     const res = await withTimeout(
@@ -1351,7 +1498,9 @@ async function wajikEpisodes(animeUrl: string): Promise<EpisodeEntry[] | null> {
 }
 
 async function resolveEpisodeList(animeUrl: string): Promise<EpisodeEntry[]> {
-    const cacheKey = `episodes:${extractSlug(animeUrl)}`
+    const slug = extractSlug(animeUrl)
+    const cacheKey = `episodes:${slug}`
+    const infoCacheKey = `animeInfo:${slug}`
     const cached = cacheGet<EpisodeEntry[]>(cacheKey)
     if (cached) return cached
 
@@ -1369,6 +1518,23 @@ async function resolveEpisodeList(animeUrl: string): Promise<EpisodeEntry[]> {
         scrapeHtml(animeUrl),
     ])
 
+    // Side effect: scrapeHtml(animeUrl) di atas selalu jalan (baik wajik-nya
+    // sukses atau nggak — Promise.allSettled nunggu keduanya), jadi HTML
+    // detail page-nya udah ada di tangan tanpa perlu fetch baru. Sekalian aja
+    // parse & cache info anime (title/poster/sinopsis/dll) di sini, biar
+    // resolveAnimeInfo() nanti (dipanggil abis ini, atau dari endpoint
+    // terpisah) tinggal baca dari cache — nol fetch tambahan di jalur normal.
+    if (scrapeOutcome.status === 'fulfilled') {
+        try {
+            const info = parseAnimeInfo(scrapeOutcome.value.html, scrapeOutcome.value.base)
+            if (info) cacheSet(infoCacheKey, info, 30 * 60 * 1000)
+        } catch {
+            // parseAnimeInfo() masih best-guess (belum diverifikasi live) —
+            // gagal di sini gak boleh numbangin resolveEpisodeList() yang
+            // udah kebukti jalan.
+        }
+    }
+
     const wajikEps = wajikOutcome.status === 'fulfilled' ? wajikOutcome.value : null
     if (wajikEps && wajikEps.length > 0) {
         cacheSet(cacheKey, wajikEps, 15 * 60 * 1000)
@@ -1383,6 +1549,27 @@ async function resolveEpisodeList(animeUrl: string): Promise<EpisodeEntry[]> {
     }
 
     return []
+}
+
+/**
+ * Ambil metadata detail anime (title/poster/sinopsis/genre/status/studio).
+ * Nebeng scrape yang udah/bakal dilakukan resolveEpisodeList() — kalau cache
+ * animeInfo udah keisi (dari pemanggilan endpoint episodes/stream/download
+ * sebelumnya buat anime yang sama), fungsi ini gak fetch apa-apa sama sekali.
+ * Kalau belum, dia trigger resolveEpisodeList() (yang scrape-nya ngisi cache
+ * sebagai side effect di atas) lalu baca ulang dari cache — tetap cuma SATU
+ * scrapeHtml() call, walaupun caller cuma butuh info-nya doang tanpa peduli
+ * episode list.
+ */
+async function resolveAnimeInfo(animeUrl: string): Promise<AnimeInfo | null> {
+    const infoCacheKey = `animeInfo:${extractSlug(animeUrl)}`
+
+    const cached = cacheGet<AnimeInfo>(infoCacheKey)
+    if (cached) return cached
+
+    await resolveEpisodeList(animeUrl)
+
+    return cacheGet<AnimeInfo>(infoCacheKey)
 }
 
 // Cap how many candidate hits get tried per pass and how long a whole pass
@@ -1429,8 +1616,31 @@ async function resolveFirstWithEpisodes(
     // different story arc entirely, not actually a missing-episode case.
     // Prefer whichever candidate's list genuinely contains the requested
     // episode number first.
-    const exactCoverage = usable.find(o => o.episodes.some(ep => ep.episode === episodeNum))
+    //
+    // CAVEAT — movies / first episodes (episodeNum <= 1): "does episode N
+    // exist" is a USELESS signal here, because virtually every anime on
+    // Otakudesu/Sokuja has an "episode 1". Without a score gate this used to
+    // hand back completely unrelated titles for movies — e.g. searching
+    // "Koe no Katachi" and getting whatever weakly-matched, low-score title
+    // happened to resolve into `usable` first, since it trivially "covers"
+    // episode 1 too. So for this range we additionally require a decent
+    // title-similarity score before trusting the coverage check.
+    const LOW_CONFIDENCE_EPISODE_MIN_SCORE = 0.5
+    const isLowConfidenceEpisode = episodeNum <= 1
+    const exactCoverage = usable.find(o =>
+        o.episodes.some(ep => ep.episode === episodeNum) &&
+        (!isLowConfidenceEpisode || o.hit.score >= LOW_CONFIDENCE_EPISODE_MIN_SCORE)
+    )
     if (exactCoverage) return { episodes: exactCoverage.episodes, matchedHit: exactCoverage.hit }
+
+    // Movies/ep1 with no confident coverage match: "closest episode number"
+    // is equally meaningless here (every candidate is 0-1 away from what we
+    // asked for), so fall back to whichever candidate has the best title
+    // match instead of the fastest-to-resolve one.
+    if (isLowConfidenceEpisode) {
+        const bestByScore = usable.reduce((best, o) => o.hit.score > best.hit.score ? o : best)
+        return { episodes: bestByScore.episodes, matchedHit: bestByScore.hit }
+    }
 
     // None of them cover it exactly — fall back to whichever candidate's
     // episode range is numerically CLOSEST to what was requested, rather
@@ -2355,26 +2565,24 @@ async function sokujSearch(query: string): Promise<SearchResult[]> {
     return []
 }
 
-// ── Episode list ─────────────────────────────────────────────────────────────
 // ── Episode list via API playlist ───────────────────────────────────────────
 // API {base}/api/playlist/?slug={episode_slug} balikin SEMUA episode anime
-// yang punya episode itu (currentSlug cuma echo, gak ngaruh ke isi array),
-// jadi episode-1 dipakai sebagai "kunci" buat dapetin full list-nya tanpa
-// perlu udah punya slug episode yang asli.
+// yang punya episode itu (currentSlug cuma echo, gak ngaruh ke isi array).
+//
+// ⚠️  FIX: sebelumnya slug episode pertama DITEBAK dari slug anime
+//     ("...-episode-1-subtitle-indonesia"). Ternyata gak selalu valid —
+//     penomoran Sokuja kadang gak mulai dari 1, atau slug episode formatnya
+//     beda dikit dari pola tebakan (typo penulis, singkatan judul beda,
+//     dll), jadi tebakan bisa 404 padahal anime + API-nya hidup normal.
+//
+//     Sekarang: scrape HALAMAN ANIME dulu buat nemu SATU link episode ASLI
+//     (apapun nomornya — bisa episode 5, bisa episode 12, gak masalah),
+//     baru slug ASLI itu yang dipakai buat hit API playlist. Slug tebakan
+//     gak dipakai lagi sama sekali. Bonus: HTML yang sama juga dipakai
+//     sebagai fallback kalau API playlist gagal/down, jadi gak ada fetch
+//     dobel.
 interface SokujPlaylistEpisode { slug: string; episodeNumber: string }
 interface SokujPlaylistResponse { currentSlug: string; episodes: SokujPlaylistEpisode[] }
-
-// "/anime/dr-stone-...-subtitle-indonesia/" → "dr-stone-...-episode-1-subtitle-indonesia"
-function animeSlugToEpisodeSlugGuess(animeUrl: string, episodeNum: number): string | null {
-    try {
-        const path = new URL(animeUrl).pathname
-        const m = path.match(/^\/anime\/(.+?)-subtitle-indonesia\/?$/)
-        if (!m) return null
-        return `${m[1]}-episode-${episodeNum}-subtitle-indonesia`
-    } catch {
-        return null
-    }
-}
 
 async function sokujPlaylist(episodeSlug: string): Promise<SokujPlaylistResponse | null> {
     const cacheKey = `sokuja-playlist:${episodeSlug}`
@@ -2409,33 +2617,11 @@ async function sokujEpisodes(animeUrl: string): Promise<EpisodeEntry[]> {
 
     const base = (() => { try { return new URL(animeUrl).origin } catch { return SOKUJA_MIRRORS[0] } })()
 
-    // Primer: API playlist — scoped ke anime ini doang, gak kayak scrape
-    // <a href> di seluruh halaman yang ternyata nyangkut widget rekomendasi
-    // anime LAIN (confirmed dari live test 29 Jun 2026: hasil scrape lama
-    // kebawa episode anime lain + salah nomor episode). Bonus: skip fetch
-    // HTML halaman anime sama sekali kalau API ini berhasil.
-    const guessSlug = animeSlugToEpisodeSlugGuess(animeUrl, 1)
-    if (guessSlug) {
-        const playlist = await sokujPlaylist(guessSlug)
-        if (playlist && playlist.episodes.length > 0) {
-            const result: EpisodeEntry[] = playlist.episodes
-                .map(e => ({
-                    episode: parseFloat(e.episodeNumber),
-                    title: `Episode ${e.episodeNumber}`,
-                    url: `${base}/${e.slug}/`,
-                }))
-                .filter(e => !isNaN(e.episode))
-                .sort((a, b) => a.episode - b.episode)
-            if (result.length > 0) {
-                cacheSet(cacheKey, result, 10 * 60 * 1000)
-                return result
-            }
-        }
-    }
-
-    // Fallback: HTML scrape — cuma kepake kalau API di atas gagal/down.
-    // Discoped ketat pakai slug prefix anime ini, biar gak ke-ulang lagi
-    // nyangkut link rekomendasi anime lain yang formatnya kebetulan sama.
+    // Fetch HTML halaman anime SEKALI — dipakai buat dua hal sekaligus:
+    //   1. Nemu minimal SATU link episode asli (buat dapetin slug asli,
+    //      bukan tebakan) yang nanti jadi kunci buat hit API playlist.
+    //   2. Fallback langsung kalau API playlist gagal/down — HTML udah
+    //      ke-fetch, gak perlu fetch ulang buat scrape manual.
     let html: string
     try {
         html = await sokujFetchHtml(animeUrl)
@@ -2453,6 +2639,9 @@ async function sokujEpisodes(animeUrl: string): Promise<EpisodeEntry[]> {
     const $ = cheerio.load(html)
     const entries: EpisodeEntry[] = []
     const seen = new Set<string>()
+    // Slug ASLI dari link episode pertama yang ketemu pas scrape — ini yang
+    // jadi kunci buat API playlist, bukan tebakan "-episode-1-...".
+    let realEpisodeSlug: string | null = null
 
     const pushEp = (href: string, label: string) => {
         if (!href || seen.has(href)) return
@@ -2469,6 +2658,14 @@ async function sokujEpisodes(animeUrl: string): Promise<EpisodeEntry[]> {
         seen.add(href)
         const epNum = parseEpisodeNumber(label || href, full)
         entries.push({ episode: epNum, title: label || `Episode ${epNum}`, url: full })
+
+        // Tangkap slug asli dari episode link PERTAMA yang lolos validasi
+        // di atas — apapun nomor episodenya, gak harus episode 1.
+        if (!realEpisodeSlug) {
+            try {
+                realEpisodeSlug = new URL(full).pathname.replace(/^\/|\/$/g, '')
+            } catch { /* skip kalau gagal parse, lanjut ke link berikutnya */ }
+        }
     }
 
     // Primer (kalau ada): __NEXT_DATA__ — gak pernah ketemu di Sokuja App
@@ -2500,6 +2697,31 @@ async function sokujEpisodes(animeUrl: string): Promise<EpisodeEntry[]> {
         })
     }
 
+    // Primer: hit API playlist pakai slug ASLI hasil scrape (bukan tebakan).
+    // Playlist API ngebalikin full list episode yang lebih lengkap & rapi
+    // ketimbang hasil scrape <a href> doang (yang kadang kepotong
+    // pagination/"load more" client-side), jadi tetap diprioritaskan walau
+    // udah ada entries dari HTML scrape di atas sebagai cadangan.
+    if (realEpisodeSlug) {
+        const playlist = await sokujPlaylist(realEpisodeSlug)
+        if (playlist && playlist.episodes.length > 0) {
+            const result: EpisodeEntry[] = playlist.episodes
+                .map(e => ({
+                    episode: parseFloat(e.episodeNumber),
+                    title: `Episode ${e.episodeNumber}`,
+                    url: `${base}/${e.slug}/`,
+                }))
+                .filter(e => !isNaN(e.episode))
+                .sort((a, b) => a.episode - b.episode)
+            if (result.length > 0) {
+                cacheSet(cacheKey, result, 10 * 60 * 1000)
+                return result
+            }
+        }
+    }
+
+    // Fallback: pakai hasil scrape HTML langsung (entries) kalau API gagal,
+    // down, atau gak ketemu sama sekali link episode buat dijadiin kunci.
     if (entries.length === 0) return []
 
     // Dedup + sort ASC by episode number
@@ -2719,7 +2941,11 @@ const sokujAdapter: SourceAdapter = {
 
 // Urutan SOURCE_ADAPTERS = urutan preferensi kalau quality setara.
 // Sokuja paling depan: domain stabil + 1080p support.
-const SOURCE_ADAPTERS: SourceAdapter[] = [sokujAdapter, otakudesuAdapter, nontonanimeidAdapter]
+const SOURCE_ADAPTERS: SourceAdapter[] = [sokujAdapter, otakudesuAdapter, nontonanimeidAdapter, samehadakuAdapter]
+
+// Lookup by id — dipakai endpoint generic adapter-search/episodes/stream
+const ADAPTERS_BY_ID: Record<string, SourceAdapter> =
+    Object.fromEntries(SOURCE_ADAPTERS.map(a => [a.id, a]))
 
 // Threshold "udah cukup bagus, gak usah cari source lain" — sesuai request:
 // sub indo 720p itu syarat minimum buat sebuah source "boleh nge-lock".
@@ -2731,7 +2957,7 @@ async function findEpisodeUrlOnAdapter(
     adapter: SourceAdapter,
     animeTitle: string,
     episodeNum: number,
-): Promise<string | null> {
+): Promise<{ url: string; score: number } | null> {
     try {
         const results = await adapter.search(animeTitle)
         if (results.length === 0) return null
@@ -2744,7 +2970,8 @@ async function findEpisodeUrlOnAdapter(
         if (!best || best.score < CROSS_SOURCE_TITLE_THRESHOLD) return null
 
         const episodes = await adapter.episodes(best.result.url)
-        return episodes.find(e => e.episode === episodeNum)?.url ?? null
+        const url = episodes.find(e => e.episode === episodeNum)?.url
+        return url ? { url, score: best.score } : null
     } catch {
         return null
     }
@@ -2754,7 +2981,15 @@ interface MultiSourceResult {
     adapterId: string
     episodeUrl: string
     stream: StreamResult
+    titleScore: number
 }
+
+// Kalau match confidence-nya di atas ini, kita percaya itu emang anime yang
+// sama — quality boleh jadi penentu. Di bawah ini, anggap "cuma pas-pasan
+// lolos ambang batas pencarian", jangan biarin dia menang cross-adapter cuma
+// gara-gara kebetulan quality-nya lebih tinggi dari adapter lain yang match-nya
+// justru lebih yakin.
+const CONFIDENT_MATCH_SCORE = 0.6
 
 // Sticky multi-source resolver. Requirement dari user: jangan lompat-lompat
 // source tiap episode — kalau source yang lagi "dipegang" masih ngasih
@@ -2775,11 +3010,11 @@ async function resolveStreamMultiSource(
     if (stickyId) {
         const adapter = adapters.find(a => a.id === stickyId)
         if (adapter) {
-            const url = await findEpisodeUrlOnAdapter(adapter, animeTitle, episodeNum)
-            if (url) {
-                const stream = await adapter.resolveStream(url, preferredQuality).catch(() => null)
+            const found = await findEpisodeUrlOnAdapter(adapter, animeTitle, episodeNum)
+            if (found) {
+                const stream = await adapter.resolveStream(found.url, preferredQuality).catch(() => null)
                 if (stream?.resolved && (stream.availableQualities[0] ?? 0) >= STICKY_QUALITY_THRESHOLD) {
-                    return { adapterId: stickyId, episodeUrl: url, stream }
+                    return { adapterId: stickyId, episodeUrl: found.url, stream, titleScore: found.score }
                 }
                 // gagal / kualitas kurang dari threshold → lanjut ke race di bawah
             }
@@ -2788,11 +3023,11 @@ async function resolveStreamMultiSource(
 
     const settled = await raceAllWithCap(
         adapters.map(async adapter => {
-            const url = await findEpisodeUrlOnAdapter(adapter, animeTitle, episodeNum)
-            if (!url) throw new Error('not-found')
-            const stream = await adapter.resolveStream(url, preferredQuality)
+            const found = await findEpisodeUrlOnAdapter(adapter, animeTitle, episodeNum)
+            if (!found) throw new Error('not-found')
+            const stream = await adapter.resolveStream(found.url, preferredQuality)
             if (!stream.resolved) throw new Error('not-resolved')
-            return { adapterId: adapter.id, episodeUrl: url, stream }
+            return { adapterId: adapter.id, episodeUrl: found.url, stream, titleScore: found.score }
         }),
         20_000, // nyari + resolve di beberapa situs sekaligus, lebih lama dari race mirror tunggal
     )
@@ -2801,6 +3036,17 @@ async function resolveStreamMultiSource(
     if (candidates.length === 0) return null
 
     candidates.sort((a, b) => {
+        // Prioritas #1: match yang confident menang duluan, titik — gak peduli
+        // quality. Ini yang nyegah kejadian kayak "Koe no Katachi" pilih 1080p
+        // terus adapter lain kebetulan match ke anime LAIN yang skornya
+        // pas-pasan lolos CROSS_SOURCE_TITLE_THRESHOLD tapi punya 1080p, lalu
+        // menang ngalahin adapter yang match-nya bener tapi cuma 720p.
+        const aConfident = a.titleScore >= CONFIDENT_MATCH_SCORE ? 1 : 0
+        const bConfident = b.titleScore >= CONFIDENT_MATCH_SCORE ? 1 : 0
+        if (aConfident !== bConfident) return bConfident - aConfident
+
+        // Prioritas #2 (di dalam tier confidence yang sama): quality >= 720p
+        // dianggap "cukup bagus", baru dibandingin angka quality-nya.
         const aOk = (a.stream.availableQualities[0] ?? 0) >= STICKY_QUALITY_THRESHOLD ? 1 : 0
         const bOk = (b.stream.availableQualities[0] ?? 0) >= STICKY_QUALITY_THRESHOLD ? 1 : 0
         if (aOk !== bOk) return bOk - aOk
@@ -2847,6 +3093,72 @@ export async function GET(req: Request) {
     const endpoint = searchParams.get('endpoint')
 
     try {
+        // ── ongoing ────────────────────────────────────────────────────────────
+        // Wajik API /otakudesu/ongoing mati (404). Scrape langsung dari
+        // Otakudesu menggunakan infrastruktur fetchSingleUrl+cheerio yang ada.
+        // Selectors dikonfirmasi dari live HTML (01 Jul 2026):
+        //   .venz ul li > .detpost
+        //     .epz       → "Episode N"
+        //     .epztipe   → hari rilis (Senin/Selasa/…)
+        //     .newnime   → tanggal update e.g. "01 Jul"
+        //     .thumb a   → href = URL detail anime, img = poster
+        //     h2.jdlflm  → judul anime
+        // Pagination: /ongoing-anime/page/{n}/
+        if (endpoint === 'ongoing') {
+            const page = Math.max(1, parseInt(searchParams.get('page') ?? '1', 10))
+            const pageUrl = page === 1
+                ? `${MIRRORS[0]}/ongoing-anime/`
+                : `${MIRRORS[0]}/ongoing-anime/page/${page}/`
+
+            const cacheKey = `ongoing:page:${page}`
+            const cached = cacheGet<object[]>(cacheKey)
+            if (cached) return Response.json({ data: { animeList: cached }, pagination: { currentPage: page } })
+
+            try {
+                const html = await fetchSingleUrl(pageUrl)
+                const $ = cheerio.load(html)
+                const animeList: object[] = []
+
+                $('.venz ul li').each((_, el) => {
+                    const $li = $(el)
+                    const $a = $li.find('.thumb a').first()
+                    const href = $a.attr('href') ?? ''
+                    if (!href) return
+
+                    // Extract slug dari URL
+                    const animeId = extractSlug(href)
+                    if (!animeId) return
+
+                    const title = $li.find('h2.jdlflm').text().trim()
+                        || $a.attr('title')?.trim()
+                        || ''
+                    if (!title) return
+
+                    // Poster: ambil srcset (resolusi lebih besar) atau src
+                    const $img = $li.find('.thumb img').first()
+                    const srcset = $img.attr('srcset') ?? ''
+                    const srcsetFirst = srcset.split(',')[0]?.trim().split(' ')[0] ?? ''
+                    const poster = srcsetFirst || $img.attr('src') || ''
+
+                    // Episode dari ".epz": "Episode 8" → "8"
+                    const epzText = $li.find('.epz').text().replace(/episode/i, '').trim()
+                    const episodes = epzText || '?'
+
+                    // Hari rilis dari ".epztipe" — icon <i> tidak punya text, tinggal trim
+                    const releaseDay = $li.find('.epztipe').text().trim().toLowerCase()
+                    const latestReleaseDate = $li.find('.newnime').text().trim()
+
+                    animeList.push({ animeId, title, poster, episodes, releaseDay, latestReleaseDate })
+                })
+
+                cacheSet(cacheKey, animeList, 5 * 60 * 1000)
+                return Response.json({ data: { animeList }, pagination: { currentPage: page } })
+            } catch (e: any) {
+                return Response.json({ error: e.message ?? 'Gagal scrape ongoing' }, { status: 500 })
+            }
+        }
+
+
         // ── proxy-video ────────────────────────────────────────────────────────
         // The browser's own <video src> request to a directUrl carries the
         // AnimeSya page as Referer, not the embed page that extraction used —
@@ -2877,15 +3189,28 @@ export async function GET(req: Request) {
             const rangeHeader = req.headers.get('range')
 
             try {
-                const upstream = await fetchWithDns(videoUrl, {
-                    headers: {
-                        ...HTML_HDRS,
-                        Referer: refererParam ?? origin,
-                        Origin: origin,
-                        ...(rangeHeader ? { Range: rangeHeader } : {}),
-                    },
-                    cache: 'no-store',
-                })
+                // Cuma connect + header phase yang dibatasi timeout-nya di sini —
+                // bukan seluruh body. Buat manifest, .text() di bawah juga ikut
+                // kena bounded waktu connect ini sebelum mulai baca; buat video
+                // bytes (return new Response(upstream.body, ...)) streaming-nya
+                // tetap jalan normal gak ke-cut walau segmennya gede/lambat,
+                // karena promise upstream udah resolve duluan begitu header
+                // dateng. Tujuannya cuma supaya origin yang nge-hang gak bikin
+                // invocation server ini nyangkut sampai dibunuh paksa sama
+                // platform — gagal cepat dengan bentuk error yang sama (502
+                // JSON) kayak sebelumnya, ditangkep di catch block yang sama.
+                const upstream = await withTimeout(
+                    fetchWithDns(videoUrl, {
+                        headers: {
+                            ...HTML_HDRS,
+                            Referer: refererParam ?? origin,
+                            Origin: origin,
+                            ...(rangeHeader ? { Range: rangeHeader } : {}),
+                        },
+                        cache: 'no-store',
+                    }),
+                    10_000,
+                )
 
                 if (!upstream.ok && upstream.status !== 206) {
                     return Response.json(
@@ -2950,6 +3275,27 @@ export async function GET(req: Request) {
 
             const episodes = filterByMaxEpisode(await resolveEpisodeList(url), maxEpisode)
             return Response.json({ data: episodes, maxEpisode })
+        }
+
+        // ── anime-info ─────────────────────────────────────────────────────────
+        // ?endpoint=anime-info&url=<url-anime>
+        // Metadata detail anime (title/poster/sinopsis/genre/status/studio/dll).
+        // ⚠️ Selector parser-nya BEST-GUESS (lihat catatan di parseAnimeInfo) —
+        // belum pernah diverifikasi live buat halaman detail. Kalau ada field
+        // yang balik null/kosong, cross-check dulu via
+        // ?endpoint=debug-anime-info sebelum dipasang ke halaman production.
+        if (endpoint === 'anime-info') {
+            const url = searchParams.get('url')
+            if (!url) return Response.json({ error: 'url required' }, { status: 400 })
+
+            const info = await resolveAnimeInfo(url)
+            if (!info) {
+                return Response.json(
+                    { error: 'Gagal parse info anime — cek ?endpoint=debug-anime-info buat lihat HTML mentahnya & sesuaikan selector' },
+                    { status: 500 }
+                )
+            }
+            return Response.json({ data: info })
         }
 
         // ── download ───────────────────────────────────────────────────────────
@@ -3029,6 +3375,71 @@ export async function GET(req: Request) {
                 return Response.json({ base, episodesParsed: episodes, liDebug, htmlSnippet: html.slice(0, 4000) })
             } catch (e) {
                 return Response.json({ error: String(e) }, { status: 500 })
+            }
+        }
+
+        // ── debug-anime-info ──────────────────────────────────────────────────
+        // DEV ONLY — cross-check selector best-guess parseAnimeInfo() sebelum
+        // dipasang ke ?endpoint=anime-info production. Dump hasil parse tiap
+        // field SATU-SATU (bukan cuma final object-nya) plus konteks HTML
+        // mentah di sekitar ".infozingle", ".sinopc", ".fotoanime" — biar
+        // kalau ada selector yang meleset, gampang liat struktur real-nya
+        // dan langsung tau harus diganti ke apa.
+        //
+        // Usage:
+        //   ?endpoint=debug-anime-info&url={anime_url}
+        //   ?endpoint=debug-anime-info&slug={anime-slug}   → dibangun ke
+        //     `${MIRRORS[0]}/anime/{slug}/` otomatis
+        if (endpoint === 'debug-anime-info') {
+            const rawUrl = searchParams.get('url')
+            const slug = searchParams.get('slug')
+            const url = rawUrl ?? (slug ? `${MIRRORS[0]}/anime/${slug}/` : null)
+            if (!url) return Response.json({ error: 'url atau slug required' }, { status: 400 })
+
+            try {
+                const { html, base } = await scrapeHtml(url)
+                const $ = cheerio.load(html)
+                const info = parseAnimeInfo(html, base)
+
+                // Dump tiap baris .infozingle p mentah-mentah, biar keliatan
+                // label apa aja yang sebenarnya dipakai kalau beda dari
+                // dugaan (mis. "Total Episode" vs "Total Eps").
+                const infozingleRows: { label: string; rawText: string }[] = []
+                $('.infozingle p').each((_, el) => {
+                    infozingleRows.push({
+                        label: $(el).find('span').first().text().trim(),
+                        rawText: $(el).text().replace(/\s+/g, ' ').trim(),
+                    })
+                })
+
+                const findContext = (needle: string) => {
+                    const idx = html.indexOf(needle)
+                    return idx >= 0 ? html.slice(Math.max(0, idx - 80), idx + 300) : null
+                }
+
+                return Response.json({
+                    url,
+                    base,
+                    htmlLength: html.length,
+                    parsed: info,
+                    infozingleRowsFound: infozingleRows.length,
+                    infozingleRows,
+                    selectorHits: {
+                        '.infozingle': $('.infozingle').length,
+                        '.jdlrx h1': $('.jdlrx h1').length,
+                        '.fotoanime img': $('.fotoanime img').length,
+                        '.sinopc': $('.sinopc').length,
+                        '.venser .sinopc': $('.venser .sinopc').length,
+                        'meta[property="og:image"]': $('meta[property="og:image"]').length,
+                    },
+                    rawContext: {
+                        infozingle: findContext('infozingle'),
+                        sinopc: findContext('sinopc'),
+                        fotoanime: findContext('fotoanime'),
+                    },
+                })
+            } catch (e: any) {
+                return Response.json({ url, error: e.message }, { status: 500 })
             }
         }
 
@@ -3176,7 +3587,7 @@ export async function GET(req: Request) {
             let streamSource: 'consumet' | 'otakudesu' = 'otakudesu'
 
             const [consumetOutcome, otakudesuOutcome] = await Promise.allSettled([
-                malId ? consumetFetchStreamUrl(malId, episodeNum).catch(() => null) : Promise.resolve(null),
+                malId ? consumetFetchStreamUrl(malId, episodeNum, primary || titleParam || '').catch(() => null) : Promise.resolve(null),
                 resolveStreamForEpisode(targetEp.url, preferredQuality),
             ])
 
@@ -3476,6 +3887,55 @@ export async function GET(req: Request) {
                 })
             } catch (e: any) {
                 return Response.json({ query: q, error: e.message }, { status: 500 })
+            }
+        }
+
+        // ── adapter-search ── ?endpoint=adapter-search&source=samehadaku&q=judul
+        if (endpoint === 'adapter-search') {
+            const source = searchParams.get('source')
+            const q = searchParams.get('q')
+            if (!source || !q) return Response.json({ error: 'source & q required' }, { status: 400 })
+            const adapter = ADAPTERS_BY_ID[source]
+            if (!adapter) return Response.json({ error: `unknown source: ${source}` }, { status: 400 })
+
+            try {
+                const data = await adapter.search(q)
+                return Response.json({ data })
+            } catch (e) {
+                return Response.json({ error: `adapter-search gagal: ${(e as Error).message}` }, { status: 500 })
+            }
+        }
+
+        // ── adapter-episodes ── ?endpoint=adapter-episodes&source=samehadaku&url=<url-anime>
+        if (endpoint === 'adapter-episodes') {
+            const source = searchParams.get('source')
+            const url = searchParams.get('url')
+            if (!source || !url) return Response.json({ error: 'source & url required' }, { status: 400 })
+            const adapter = ADAPTERS_BY_ID[source]
+            if (!adapter) return Response.json({ error: `unknown source: ${source}` }, { status: 400 })
+
+            try {
+                const data = await adapter.episodes(url)
+                return Response.json({ data })
+            } catch (e) {
+                return Response.json({ error: `adapter-episodes gagal: ${(e as Error).message}` }, { status: 500 })
+            }
+        }
+
+        // ── adapter-stream ── ?endpoint=adapter-stream&source=samehadaku&url=<url-episode>&quality=720
+        if (endpoint === 'adapter-stream') {
+            const source = searchParams.get('source')
+            const url = searchParams.get('url')
+            const quality = searchParams.get('quality')
+            if (!source || !url) return Response.json({ error: 'source & url required' }, { status: 400 })
+            const adapter = ADAPTERS_BY_ID[source]
+            if (!adapter) return Response.json({ error: `unknown source: ${source}` }, { status: 400 })
+
+            try {
+                const data = await adapter.resolveStream(url, quality ? parseInt(quality, 10) : null)
+                return Response.json({ data })
+            } catch (e) {
+                return Response.json({ error: `adapter-stream gagal: ${(e as Error).message}` }, { status: 500 })
             }
         }
 

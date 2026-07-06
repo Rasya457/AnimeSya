@@ -1,4 +1,5 @@
 import type { NextConfig } from 'next'
+import path from 'path'
 
 const securityHeaders = [
   // Cegah browser menebak MIME type
@@ -11,7 +12,7 @@ const securityHeaders = [
   { key: 'Strict-Transport-Security', value: 'max-age=31536000; includeSubDomains' },
   // Matikan sensor/mikrofon/lokasi
   { key: 'Permissions-Policy', value: 'camera=(), microphone=(), geolocation=()' },
-  // Basic XSS protection (header lama, tapi masih dihargai browser lama)
+  // Basic XSS protection
   { key: 'X-XSS-Protection', value: '1; mode=block' },
 ]
 
@@ -20,18 +21,31 @@ const nextConfig: NextConfig = {
     ignoreDuringBuilds: true,
   },
 
+  // Hapus header X-Powered-By supaya gak expose tech stack
+  poweredByHeader: false,
+
+  // Fix warning "multiple lockfiles" — set root ke direktori workspace
+  outputFileTracingRoot: path.join(__dirname, '../'),
+
   async headers() {
     return [
       {
-        // Terapkan ke semua route
+        // Security headers ke semua route
         source: '/:path*',
         headers: securityHeaders,
       },
       {
-        // Static assets — cache aggressive: 1 tahun
+        // Static assets — cache aggressive: 1 tahun (immutable)
         source: '/_next/static/:path*',
         headers: [
           { key: 'Cache-Control', value: 'public, max-age=31536000, immutable' },
+        ],
+      },
+      {
+        // Image optimization cache 7 hari
+        source: '/_next/image/:path*',
+        headers: [
+          { key: 'Cache-Control', value: 'public, max-age=604800, stale-while-revalidate=86400' },
         ],
       },
     ]
@@ -41,6 +55,8 @@ const nextConfig: NextConfig = {
     remotePatterns: [
       { protocol: 'https', hostname: 'cdn.myanimelist.net' },
       { protocol: 'https', hostname: 'img.myanimelist.net' },
+      { protocol: 'https', hostname: 'otakudesu.blog' },
+      { protocol: 'https', hostname: 'otakudesu.fit' },
       { protocol: 'https', hostname: 'otakudesu.cloud' },
       { protocol: 'https', hostname: 'otakudesu.best' },
       { protocol: 'https', hostname: 'otakudesu.care' },
@@ -61,7 +77,7 @@ const nextConfig: NextConfig = {
 
   compress: true,
 
-  // ✅ Tambah ini — fix Turbopack + Firebase service registry error
+  // Fix Turbopack + Firebase service registry error
   transpilePackages: [
     'firebase',
     '@firebase/app',

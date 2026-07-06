@@ -5,15 +5,29 @@ import { useRouter } from "next/navigation";
 import Image from "next/image";
 import { Settings, User, Sliders, LogOut, Check, ArrowLeft, Camera, X } from "lucide-react";
 import { useAuthStore } from "@/store/authStore";
-import { usePlayerStore } from "@/store/playerStore";
 import { Input } from "@/components/ui/Input";
 import { Button } from "@/components/ui/Button";
 
 export default function SettingsPage() {
   const router = useRouter();
   const { user, updateProfile, logout } = useAuthStore();
-  const { autoplay, setAutoplay } = usePlayerStore();
+  const [autoplay, setAutoplay] = useState(true);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    try {
+      const val = localStorage.getItem("autoplay-next");
+      if (val !== null) setAutoplay(val === "true");
+    } catch {}
+  }, []);
+
+  const handleToggleAutoplay = () => {
+    const nextVal = !autoplay;
+    setAutoplay(nextVal);
+    try {
+      localStorage.setItem("autoplay-next", String(nextVal));
+    } catch {}
+  };
 
   const [name,        setName]        = useState("");
   const [avatar,      setAvatar]      = useState("");
@@ -196,7 +210,7 @@ export default function SettingsPage() {
               <span className="text-[10px] text-zinc-500">Automatically play the next queued title</span>
             </div>
             <button
-              onClick={() => setAutoplay(!autoplay)}
+              onClick={handleToggleAutoplay}
               className={`w-10 h-6 rounded-full p-1 transition-colors cursor-pointer ${
                 autoplay ? "bg-accent" : "bg-zinc-800"
               }`}

@@ -250,7 +250,9 @@ export default function DetailClient({ anime }: DetailClientProps) {
             {anime.relations.map((rel) => {
               let badgeColor = "bg-zinc-800 text-zinc-400 border-zinc-700";
               const relLower = rel.relation.toLowerCase();
-              if (relLower.includes("sequel")) {
+              if (/^season \d+$/.test(relLower)) {
+                badgeColor = "bg-accent/10 text-accent border-accent/20";
+              } else if (relLower.includes("sequel")) {
                 badgeColor = "bg-emerald-500/10 text-emerald-400 border-emerald-500/20";
               } else if (relLower.includes("prequel")) {
                 badgeColor = "bg-sky-500/10 text-sky-400 border-sky-500/20";
