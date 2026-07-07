@@ -184,6 +184,12 @@ const HTML_HDRS: Record<string, string> = {
     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
     'Accept-Language': 'id-ID,id;q=0.9,en-US;q=0.8',
     'Cache-Control': 'no-cache',
+    // Beberapa proteksi anti-bot cek Referer buat mastiin request "asal" dari
+    // browser yang lagi browsing situs itu sendiri, bukan hit langsung/scraper.
+    'Referer': 'https://www.google.com/',
+    'Sec-Fetch-Dest': 'document',
+    'Sec-Fetch-Mode': 'navigate',
+    'Sec-Fetch-Site': 'same-origin',
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -3106,16 +3112,28 @@ export async function GET(req: Request) {
         // Pagination: /ongoing-anime/page/{n}/
         if (endpoint === 'ongoing') {
             const page = Math.max(1, parseInt(searchParams.get('page') ?? '1', 10))
-            const pageUrl = page === 1
-                ? `${MIRRORS[0]}/ongoing-anime/`
-                : `${MIRRORS[0]}/ongoing-anime/page/${page}/`
 
             const cacheKey = `ongoing:page:${page}`
             const cached = cacheGet<object[]>(cacheKey)
             if (cached) return Response.json({ data: { animeList: cached }, pagination: { currentPage: page } })
 
             try {
-                const html = await fetchSingleUrl(pageUrl)
+                // Coba tiap mirror satu-satu — kalau satu mirror ngeblok (403)
+                // atau down, lanjut ke mirror berikutnya alih-alih langsung gagal.
+                let html: string | null = null
+                let lastErr: Error | null = null
+                for (const mirror of MIRRORS) {
+                    const pageUrl = page === 1
+                        ? `${mirror}/ongoing-anime/`
+                        : `${mirror}/ongoing-anime/page/${page}/`
+                    try {
+                        html = await fetchSingleUrl(pageUrl)
+                        break
+                    } catch (e) {
+                        lastErr = e as Error
+                    }
+                }
+                if (!html) throw lastErr ?? new Error('Semua mirror gagal')
                 const $ = cheerio.load(html)
                 const animeList: object[] = []
 
