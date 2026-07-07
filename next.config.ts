@@ -24,9 +24,6 @@ const nextConfig: NextConfig = {
   // Hapus header X-Powered-By supaya gak expose tech stack
   poweredByHeader: false,
 
-  // Fix warning "multiple lockfiles" — set root ke direktori workspace
-  outputFileTracingRoot: path.join(__dirname, '../'),
-
   async headers() {
     return [
       {
@@ -108,3 +105,4 @@ const nextConfig: NextConfig = {
 }
 
 export default nextConfig
+
