@@ -1,4 +1,5 @@
 import type { AnimeDetail, AnimeListItem, EpisodeListItem, RelatedAnime } from '@/types/anime'
+import * as cheerio from 'cheerio'
 
 const JIKAN = 'https://api.jikan.moe/v4'
 const WAJIK = 'https://wajik-anime-api.vercel.app/otakudesu'
@@ -587,6 +588,88 @@ function buildFallbackDetail(animeId: string, info: OtakudesuRawInfo): AnimeDeta
   }
 }
 
+async function scrapeOtakudesuOngoing(page = '1', revalidate = 300): Promise<AnimeListItem[]> {
+  const pageNum = Math.max(1, parseInt(page, 10))
+  let html: string | null = null
+  let lastErr: Error | null = null
+
+  const mirrors = [
+    process.env.ANIME_INDO_BASE ?? 'https://otakudesu.blog',
+    'https://otakudesu.fit',
+  ]
+
+  for (const mirror of mirrors) {
+    const pageUrl = pageNum === 1
+      ? `${mirror}/ongoing-anime/`
+      : `${mirror}/ongoing-anime/page/${pageNum}/`
+    try {
+      const res = await fetch(pageUrl, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'Accept-Language': 'id-ID,id;q=0.9,en-US;q=0.8',
+          'Referer': 'https://www.google.com/',
+        },
+        next: { revalidate },
+        signal: AbortSignal.timeout(6000),
+      })
+      if (res.ok) {
+        html = await res.text()
+        if (html && html.toLowerCase().includes('<title>') && !html.toLowerCase().includes('404')) {
+          break
+        }
+      }
+    } catch (e) {
+      lastErr = e as Error
+    }
+  }
+
+  if (!html) {
+    console.error('[anime-api] scrapeOtakudesuOngoing gagal dari semua mirror:', lastErr)
+    return []
+  }
+
+  try {
+    const $ = cheerio.load(html)
+    const ongoingList: AnimeListItem[] = []
+
+    $('.venz ul li').each((_, el) => {
+      const $li = $(el)
+      const $a = $li.find('.thumb a').first()
+      const href = $a.attr('href') ?? ''
+      if (!href) return
+
+      const animeId = href.replace(/\/$/, '').split('/').pop() ?? ''
+      if (!animeId) return
+
+      const title = $li.find('h2.jdlflm').text().trim() || $a.attr('title')?.trim() || ''
+      if (!title) return
+
+      const poster = $li.find('.thumb img').first().attr('src') ?? ''
+      const episodes = $li.find('.epz').text().trim().replace(/Episode\s*/i, '')
+      const releaseDay = $li.find('.epztipe').text().trim()
+      const latestReleaseDate = $li.find('.newnime').text().trim()
+
+      ongoingList.push({
+        animeId,
+        title,
+        poster,
+        episodes,
+        releaseDay: releaseDay.toLowerCase(),
+        latestReleaseDate,
+        genres: [],
+        score: null,
+        status: 'Ongoing',
+      })
+    })
+
+    return ongoingList
+  } catch (err) {
+    console.error('[anime-api] scrapeOtakudesuOngoing parsing error:', err)
+    return []
+  }
+}
+
 // ─── API ──────────────────────────────────────────────────────────────────────
 
 export const animeApi = {
@@ -867,17 +950,10 @@ export const animeApi = {
   },
 
   home: async (page = '1'): Promise<{ ongoing: AnimeListItem[]; completed: AnimeListItem[] }> => {
-    const [ongoingJson, completedJson] = await Promise.all([
-      safeFetchJson(`${getBaseUrl()}/api/proxy/stream-indo?endpoint=ongoing&page=${page}`, REVALIDATE_ONGOING, 2, 800, internalFetchHeaders()),
+    const [ongoing, completedJson] = await Promise.all([
+      scrapeOtakudesuOngoing(page, REVALIDATE_ONGOING),
       safeFetchJikan(`${JIKAN}/top/anime?filter=bypopularity&page=${page}`, REVALIDATE_COMPLETED),
     ])
-
-    // Otakudesu udah ngurutin list ongoing-nya berdasarkan update terbaru
-    // duluan (itu emang arti dari halaman "ongoing" di homepage-nya), jadi
-    // gak perlu sorting daysSinceUpdate tambahan kayak versi Jikan dulu.
-    const ongoing = Array.isArray(ongoingJson?.data?.animeList)
-      ? ongoingJson.data.animeList.map(mapWajikOngoingItem)
-      : []
 
     const completed = Array.isArray(completedJson?.data)
       ? completedJson.data.map(mapJikanListItem)
