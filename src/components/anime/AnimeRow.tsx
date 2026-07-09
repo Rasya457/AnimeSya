@@ -81,8 +81,7 @@ const AnimeRow: React.FC<AnimeRowProps> = ({
 
         <div
           ref={rowRef}
-          data-lenis-prevent
-          className="w-full flex items-center gap-5 overflow-x-auto scrollbar-hide scroll-smooth pb-4 px-1"
+          className="w-full flex items-center gap-5 overflow-x-auto scrollbar-hide pb-4 px-1"
         >
           {animeList.map((anime) => {
             const ext      = anime as any

@@ -134,7 +134,11 @@ function loadQuality(): 1080 | 720 | 480 | 360 {
       return Number(stored) as 1080 | 720 | 480 | 360
     }
   } catch { /* silent */ }
-  return 720  // default 720p
+  // Default 1080p — minta kualitas tertinggi dulu. Fallback otomatisnya udah
+  // ditangani di resolve logic (Sokuja 1080 → Sokuja 720 → Otakudesu 720),
+  // jadi kalau ternyata gak ada yang 1080, tetep kepake stream terbaik yang
+  // available tanpa perlu user milih manual.
+  return 1080
 }
 
 function saveQuality(q: 1080 | 720 | 480 | 360) {
@@ -494,6 +498,7 @@ export default function WatchClient() {
   const { user } = useAuthStore()
 
   const [server, setServer] = useState<Server>('sub')
+  const [disableSandbox, setDisableSandbox] = useState(false)
   const [iframeKey, setIframeKey] = useState(0)
   const [isLoading, setIsLoading] = useState(true)
   const [airedEpisodes, setAiredEpisodes] = useState<number>(0)
@@ -506,9 +511,12 @@ export default function WatchClient() {
   const [indoEpTitle, setIndoEpTitle] = useState<string | null>(null)
   const [infoReady, setInfoReady] = useState(false)
 
-  // ── Quality selector (indo server only) — Otakudesu maks 720p, tapi
-  // Samehadaku bisa 1080p, jadi semua tier dimunculkan. Default 720p. ─────────
-  const [quality, setQuality] = useState<1080 | 720 | 480 | 360>(720)
+  // ── Quality request (indo server only) — sekarang otomatis, gak ada UI
+  // manual di bawah video lagi. Selalu minta 1080p dulu; resolve logic yang
+  // nentuin fallback-nya sendiri (Sokuja 1080 → Sokuja 720 → Otakudesu 720).
+  // `setQuality`/`saveQuality` masih dipakai internal buat cache key & tombol
+  // kualitas bawaan di dalam player controls. ─────────────────────────────────
+  const [quality, setQuality] = useState<1080 | 720 | 480 | 360>(1080)
   const [availableQualities, setAvailableQualities] = useState<number[]>([])
 
   // Load kualitas tersimpan sekali pas mount, biar konsisten antar episode &
@@ -951,11 +959,23 @@ export default function WatchClient() {
       try {
         const res = await fetch(`/api/proxy/anime/${malId}`)
         const json = await res.json()
-        if (json.statusCode !== 200 || !json.data) {
-          throw new Error("Failed to load anime details")
-        }
-        const anime = json.data
 
+        // Kalau API detail gagal (Jikan rate-limit / network error), pakai
+        // data minimal biar halaman tetap bisa load & streaming tetap jalan.
+        if (!res.ok || json.statusCode !== 200 || !json.data) {
+          console.warn(`[watch] Gagal ambil detail anime ${malId} — lanjut dengan data minimal`)
+          animeInfoRef.current = {
+            title: animeInfoRef.current.title !== 'Unknown'
+              ? animeInfoRef.current.title
+              : `Anime #${malId}`,
+            altTitles: undefined,
+            poster: '',
+            totalEpisodes: undefined,
+          }
+          return
+        }
+
+        const anime = json.data
         durationMsRef.current = EPISODE_DURATION_MS
 
         const plannedTotal = typeof anime.totalEpisodes === 'number' ? anime.totalEpisodes : null
@@ -982,7 +1002,8 @@ export default function WatchClient() {
         const aired = Array.isArray(anime.episodes) ? anime.episodes.length : (plannedTotal ?? 0)
         setAiredEpisodes(aired)
       } catch (err) {
-        console.error("Error fetching watch page details:", err)
+        // Network error / JSON parse error — non-fatal, streaming masih jalan
+        console.warn(`[watch] fetchInfo error (non-fatal):`, err)
       } finally {
         setInfoReady(true)
       }
@@ -1377,6 +1398,17 @@ export default function WatchClient() {
     if (!title) return null
     try {
       const msParams = new URLSearchParams({ title, episode: String(episodeNum), quality: String(q) })
+      // Bug fix: sebelumnya cuma title utama (biasanya dari Otakudesu) yang
+      // dikirim ke multi-stream. Anime yang alt title-nya beda konvensi total
+      // dari primary (mis. "Dogul Wang" romanisasi Korea vs "Tomb Raider King"
+      // judul resmi Inggris yang dipake Sokuja) jadi gak pernah ketemu, karena
+      // zero word-overlap antara primary dan judul di adapter itu. altTitles
+      // (dari Jikan synonyms, animeInfoRef udah punya ini) dikirim juga biar
+      // backend bisa nyocokin ke SEMUA nama yang mungkin dipakai tiap source.
+      const altTitles = animeInfoRef.current.altTitles
+      if (altTitles && altTitles.length > 0) {
+        msParams.set('altTitles', altTitles.join(','))
+      }
       const msRes = await fetch(`/api/proxy/stream-indo?endpoint=multi-stream&${msParams}`)
       const msJson = await msRes.json()
       if (msJson.error || (!msJson.data?.directUrl && !msJson.data?.iframe)) return null
@@ -1441,24 +1473,37 @@ export default function WatchClient() {
       let source = 'otakudesu'
       let referer: string | null = null
 
-      // Threshold-nya ngikutin `quality` yang dipilih user (bukan hardcoded
-      // 720p) — kalau user pilih 1080p tapi Otakudesu cuma punya 720p, source
-      // lain tetap ikut dipertimbangkan walau Otakudesu "berhasil".
+      // Sokuja diprioritaskan — SELALU dicek (gak nunggu Otakudesu gagal
+      // dulu). Sokuja menang selama dia PUNYA stream sama sekali, gak peduli
+      // qualitynya nyampe request user apa enggak (misal user minta 1080p
+      // tapi Sokuja cuma ada 720p buat episode ini — tetep pilih Sokuja 720p
+      // itu, JANGAN jatuh ke Otakudesu). Alasannya: Otakudesu sering "punya"
+      // stream juga (otaku.ok === true) padahal mirror yang kepilih itu host
+      // yang gak reliable buat di-iframe-in cross-origin (contoh: Blogger
+      // video.g, yang throw MEDIA_ELEMENT_ERROR / Format error di browser
+      // walau dari sisi server keliatan "resolved"). Otakudesu cuma jadi
+      // pilihan terakhir kalau Sokuja bener-bener nihil (gak ketemu / gagal
+      // resolve total), bukan cuma gara-gara qualitynya kurang tinggi.
+      const ms = await multiSourcePromise
+      if (isStale()) return
+
       const otakudesuBest = qualities.length > 0 ? Math.max(...qualities) : 0
-      if (!otaku.ok || otakudesuBest < quality) {
-        const ms = await multiSourcePromise
-        if (isStale()) return
-        if (ms) {
-          const msBest = ms.qualities.length > 0 ? Math.max(...ms.qualities) : 0
-          if (!otaku.ok || msBest > otakudesuBest) {
-            iframe = ms.iframe
-            direct = ms.direct
-            qualities = ms.qualities
-            source = ms.source
-            referer = ms.referer
-          }
-        }
+      const msBest = ms && ms.qualities.length > 0 ? Math.max(...ms.qualities) : 0
+      const msHasStream = !!ms && !!(ms.iframe || ms.direct)
+
+      if (msHasStream) {
+        // Sokuja (atau adapter lain yang menang di multi-stream) punya
+        // stream → langsung pakai itu, titik — gak dibandingin lagi sama
+        // quality yang diminta user.
+        iframe = ms!.iframe
+        direct = ms!.direct
+        qualities = ms!.qualities
+        source = ms!.source
+        referer = ms!.referer
       }
+      // else: Sokuja beneran nihil → tetap pakai hasil Otakudesu (source
+      // udah di-set 'otakudesu' di atas)
+
 
       if (!iframe && !direct) {
         if (!manualQuery) setIndoManual(animeInfoRef.current.title)
@@ -1783,7 +1828,11 @@ export default function WatchClient() {
                             saveQuality(next)
                             setShowQualityMenu(false)
                           }}
-                          disabled={known && !isAvailable}
+                          // Sengaja TIDAK disabled walau known && !isAvailable — availableQualities
+                          // cuma cerminan hasil resolve TERAKHIR (misal Sokuja sempet gagal match/
+                          // timeout dan Otakudesu yang menang, cap 720p). Kalau di-disable, user gak
+                          // akan pernah bisa maksa retry ke Sokuja lagi buat quality yang lebih tinggi,
+                          // padahal warning banner di bawah udah didesain buat nangkep kasus ini.
                           className={`relative w-full flex items-center justify-between gap-2 px-3.5 py-2.5 text-[11px] font-bold transition-colors cursor-pointer
                             ${quality === q
                               ? 'bg-emerald-600/20 text-emerald-300'
@@ -1919,26 +1968,61 @@ export default function WatchClient() {
               </div>
             </>
           ) : (
-            <iframe
-              key={iframeKey}
-              ref={iframeRef}
-              src={currentSrc ?? undefined}
-              onLoad={handleIframeLoad}
-              title={`${animeDetails?.title || 'Anime'} - Episode ${epNum}`}
-              className="absolute inset-0 w-full h-full"
-              allowFullScreen
-              allow={
-                server === 'indo'
-                  ? 'autoplay; encrypted-media; fullscreen; picture-in-picture'
-                  : 'autoplay; encrypted-media; fullscreen; picture-in-picture; clipboard-write'
-              }
-              // Sandbox cuma buat fallback Indo (pas extract direct-video
-              // gagal & jatuh ke iframe host asli) — blokir window.open()
-              // popup & redirect paksa, dua sumber iklan paling ganggu.
-              // Sub/Dub (megaplay) dibiarin tanpa sandbox karena udah
-              // pernah dicoba & malah bikin player-nya gagal load.
-              sandbox={server === 'indo' ? 'allow-scripts allow-same-origin allow-forms' : undefined}
-            />
+            <>
+              <iframe
+                key={iframeKey}
+                ref={iframeRef}
+                src={currentSrc ?? undefined}
+                onLoad={handleIframeLoad}
+                title={`${animeDetails?.title || 'Anime'} - Episode ${epNum}`}
+                className="absolute inset-0 w-full h-full"
+                allowFullScreen
+                allow={
+                  server === 'indo'
+                    ? 'autoplay; encrypted-media; fullscreen; picture-in-picture'
+                    : 'autoplay; encrypted-media; fullscreen; picture-in-picture; clipboard-write'
+                }
+                // Sandbox dipasang lagi buat Indo (default) — ini yang blokir
+                // window.open() popup ads dari host ad-supported (Otakudesu
+                // fallback: desustream/mp4upload/dll). Direct mp4/m3u8 dari
+                // Sokuja main lewat native <video> di atas, bukan lewat iframe
+                // ini sama sekali — jadi gak kepengaruh sandbox ini.
+                // Sub/Dub (megaplay) tetap tanpa sandbox — udah pernah dicoba
+                // & malah bikin player-nya gagal load.
+                sandbox={
+                  !disableSandbox && server === 'indo'
+                    ? 'allow-scripts allow-same-origin allow-forms allow-presentation'
+                    : undefined
+                }
+              />
+
+              {/* Prev/Next overlay DI DALAM video — konsisten sama layout
+                  native-video (Sokuja dkk). Iframe-nya cross-origin/sandboxed
+                  jadi gak bisa kita kontrol play/pause/seek dari luar, tapi
+                  prev/next cuma navigasi halaman (router.push), jadi aman
+                  ditumpuk di atas iframe — pointer-events-none di wrapper
+                  biar klik di luar tombol tetep nembus ke player Otakudesu
+                  di bawahnya, cuma area tombolnya sendiri yang interaktif. */}
+              <div className="absolute inset-0 z-[10] flex items-center justify-between px-3 md:px-6 pointer-events-none opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity duration-200">
+                <button
+                  onClick={() => goToEpisode(prevHref)}
+                  disabled={!canGoPrev}
+                  aria-label="Episode sebelumnya"
+                  className="flex items-center justify-center w-11 h-11 md:w-12 md:h-12 rounded-full bg-black/60 backdrop-blur-sm border border-white/10 text-white disabled:opacity-0 disabled:pointer-events-none cursor-pointer pointer-events-auto hover:bg-black/80 transition-all"
+                >
+                  <SkipBack className="w-5 h-5 md:w-6 md:h-6" fill="currentColor" aria-hidden="true" />
+                </button>
+
+                <button
+                  onClick={() => goToEpisode(nextHref)}
+                  disabled={!canGoNext}
+                  aria-label="Episode selanjutnya"
+                  className="flex items-center justify-center w-11 h-11 md:w-12 md:h-12 rounded-full bg-black/60 backdrop-blur-sm border border-white/10 text-white disabled:opacity-0 disabled:pointer-events-none cursor-pointer pointer-events-auto hover:bg-black/80 transition-all"
+                >
+                  <SkipForward className="w-5 h-5 md:w-6 md:h-6" fill="currentColor" aria-hidden="true" />
+                </button>
+              </div>
+            </>
           )}
 
           {!(server === 'indo' && directUrl) && (
@@ -2020,54 +2104,21 @@ export default function WatchClient() {
                 {label}
               </button>
             ))}
+
+            {!(server === 'indo' && directUrl) && (
+              <button
+                onClick={() => setDisableSandbox(prev => !prev)}
+                title={!disableSandbox ? 'Matikan AdBlocker jika player gagal memuat video' : 'Aktifkan AdBlocker untuk memblokir iklan pop-up'}
+                className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold border transition-all duration-200 cursor-pointer active:scale-95 sm:ml-auto focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none
+                  ${!disableSandbox
+                    ? 'bg-emerald-950/30 text-emerald-400 border-emerald-500/20 hover:bg-emerald-950/50 hover:border-emerald-500/40'
+                    : 'bg-amber-950/30 text-amber-400 border-amber-500/20 hover:bg-amber-950/50 hover:border-amber-500/40'
+                  }`}
+              >
+                {!disableSandbox ? '🛡️ AdBlock: Aktif' : '⚠️ AdBlock: Mati (Gunakan jika error)'}
+              </button>
+            )}
           </div>
-
-          {server === 'indo' && (
-            <div className="flex items-center gap-2 flex-wrap pt-2 border-t border-white/5">
-              <span className="text-[9px] font-bold text-zinc-500 uppercase tracking-widest pl-0.5">Kualitas</span>
-              <div className="flex items-center gap-1.5 flex-wrap">
-                {([1080, 720, 480, 360] as const).map(q => {
-                  const known = availableQualities.length > 0
-                  const isAvailable = !known || availableQualities.includes(q)
-                  const isBest = known && q === Math.max(...availableQualities)
-                  return (
-                    <button
-                      key={q}
-                      disabled={known && !isAvailable}
-                      onClick={() => {
-                        const next = q as 1080 | 720 | 480 | 360
-                        // Simpen posisi SEKARANG dulu sebelum source-nya
-                        // di-resolve ulang buat kualitas baru — biar video
-                        // lanjut dari sini, bukan balik dari 0.
-                        if (videoRef.current) resumeSecondsRef.current = videoRef.current.currentTime
-                        setQuality(next)
-                        saveQuality(next)
-                      }}
-                      title={known && !isAvailable ? 'Gak tersedia buat episode ini' : undefined}
-                      className={`px-2.5 py-1 rounded-lg text-[10px] font-bold border transition-all cursor-pointer active:scale-95 focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none
-                        ${quality === q
-                          ? 'bg-emerald-600/20 text-emerald-300 border-emerald-500/40'
-                          : isAvailable
-                            ? 'bg-[#0a0a12] text-zinc-400 border-white/5 hover:text-white hover:border-white/10'
-                            : 'bg-transparent text-zinc-700 border-transparent opacity-40 cursor-not-allowed'
-                        }`}
-                    >
-                      {q}p
-                      {isBest && (
-                        <span className="w-1.5 h-1.5 rounded-full bg-teal-400 inline-block ml-1 align-middle" />
-                      )}
-                    </button>
-                  )
-                })}
-              </div>
-            </div>
-          )}
-
-          {server === 'indo' && availableQualities.length > 0 && !availableQualities.includes(quality) && (
-            <p className="text-[10px] text-amber-400/90 font-medium bg-amber-950/20 border border-amber-700/20 px-3 py-2 rounded-xl">
-              ⚠️ {quality}p gak tersedia di {SOURCE_LABELS[indoSource] ?? indoSource} buat episode ini — nampilin kualitas terbaik yang ada ({Math.max(...availableQualities)}p).
-            </p>
-          )}
 
           {server === 'indo' && availableQualities.length > 0 && Math.max(...availableQualities) <= 480 && (
             <div className="flex items-center justify-between gap-2 flex-wrap">

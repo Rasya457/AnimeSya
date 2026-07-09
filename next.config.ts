@@ -21,6 +21,10 @@ const nextConfig: NextConfig = {
     ignoreDuringBuilds: true,
   },
 
+  // Fix: workspace root agar Next.js tidak salah deteksi multi-lockfile
+  // (warning "We detected multiple lockfiles" di Vercel).
+  outputFileTracingRoot: path.join(__dirname, '../'),
+
   // Hapus header X-Powered-By supaya gak expose tech stack
   poweredByHeader: false,
 
@@ -65,11 +69,15 @@ const nextConfig: NextConfig = {
       { protocol: 'https', hostname: 's4.anilist.co' },
       { protocol: 'https', hostname: 'lh3.googleusercontent.com' },
       { protocol: 'https', hostname: '*.googleusercontent.com' },
+      // Sokuja CDN
+      { protocol: 'https', hostname: 'gbr.sokuja.uk' },
+      { protocol: 'https', hostname: '*.sokuja.uk' },
     ],
     formats: ['image/avif', 'image/webp'],
     deviceSizes: [640, 750, 828, 1080, 1200],
     imageSizes: [16, 32, 48, 64, 96, 128, 256],
-    minimumCacheTTL: 60 * 60 * 24 * 7,
+    // 30 hari — poster anime jarang berubah, cache agresif menghemat bandwidth
+    minimumCacheTTL: 60 * 60 * 24 * 30,
   },
 
   compress: true,

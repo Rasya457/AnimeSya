@@ -4,10 +4,30 @@ const JIKAN = 'https://api.jikan.moe/v4'
 const WAJIK = 'https://wajik-anime-api.vercel.app/otakudesu'
 
 // fetch() di server-side butuh URL absolut — relative path tidak valid
+//
+// ⚠️ process.env.VERCEL_URL SELALU nunjuk ke URL unik deployment yang lagi
+// jalan (yang ada hash-nya, mis. anime-d71v0378i-....vercel.app), BUKAN
+// domain production stabil. Kalau Vercel Authentication / Deployment
+// Protection nyala, URL itu balikin halaman login (HTML) buat request tanpa
+// auth — termasuk request server-to-server dari fungsi ini sendiri, bukan
+// cuma browser. Makanya NEXT_PUBLIC_SITE_URL WAJIB di-set di Vercel env vars
+// ke domain production/custom lu (tanpa hash) supaya dicek duluan dan
+// VERCEL_URL gak kepake buat internal fetch ini.
 function getBaseUrl(): string {
   if (process.env.NEXT_PUBLIC_SITE_URL) return process.env.NEXT_PUBLIC_SITE_URL
   if (process.env.VERCEL_URL) return `https://${process.env.VERCEL_URL}`
   return 'http://localhost:3000'
+}
+
+// Header bypass buat Deployment Protection — jaga-jaga kalau NEXT_PUBLIC_SITE_URL
+// belum sempat di-set atau kita lagi manggil deployment preview yang emang
+// diproteksi. Aktifin "Protection Bypass for Automation" di Vercel dashboard
+// (Settings → Deployment Protection), copy secret-nya, simpan sebagai
+// VERCEL_AUTOMATION_BYPASS_SECRET di env vars. Kalau env var-nya gak di-set,
+// helper ini balikin object kosong dan gak ngaruh apa-apa (aman di-skip).
+function internalFetchHeaders(): Record<string, string> {
+  const secret = process.env.VERCEL_AUTOMATION_BYPASS_SECRET
+  return secret ? { 'x-vercel-protection-bypass': secret } : {}
 }
 
 // ─── Cache TTL ────────────────────────────────────────────────────────────────
@@ -227,10 +247,10 @@ async function safeFetchJikan(url: string, revalidate = 300, retries = 3, delayM
  * Retry lebih sederhana drpd safeFetchJikan karena gak ada perlakuan
  * khusus buat 429 — host lain jarang pakai rate-limit response yang sama.
  */
-async function safeFetchJson(url: string, revalidate = 300, retries = 2, delayMs = 800): Promise<any> {
+async function safeFetchJson(url: string, revalidate = 300, retries = 2, delayMs = 800, headers: Record<string, string> = {}): Promise<any> {
   for (let i = 0; i < retries; i++) {
     try {
-      const res = await fetch(url, { next: { revalidate } })
+      const res = await fetch(url, { next: { revalidate }, headers })
       if (!res.ok) {
         console.error(`[anime-api] Fetch failed ${url} → ${res.status}`)
         if (i === retries - 1) return null
@@ -359,9 +379,11 @@ function extractSeasonNumber(title: string): number | null {
     t.match(/(\d+)(?:st|nd|rd|th)\s*season/) ||
     t.match(/\bs(\d+)\b/)
   if (m) return parseInt(m[1], 10)
-  const roman = t.match(/\b(ii|iii|iv|v)\b/)
+  const roman = t.match(/\b(ii|iii|iv|v|vi|vii|viii|ix|x)\b/)
   if (roman) {
-    const romanMap: Record<string, number> = { ii: 2, iii: 3, iv: 4, v: 5 }
+    const romanMap: Record<string, number> = {
+      ii: 2, iii: 3, iv: 4, v: 5, vi: 6, vii: 7, viii: 8, ix: 9, x: 10
+    }
     return romanMap[roman[1]]
   }
   return null
@@ -415,6 +437,24 @@ interface OtakudesuRawInfo {
   episodes?: { episodeNumber: number; title?: string; uploadDate?: string }[]
 }
 
+// Deteksi judul junk/generik dari Otakudesu — kejadian kalau scraper nyasar
+// ke halaman selain halaman anime spesifik (404 yang redirect ke homepage,
+// dst), jadi yang ke-scrape itu <title> situs-wide, bukan judul anime.
+//
+// ⚠️ Normalize dulu (buang tanda baca, rapetin spasi) SEBELUM dicocokin —
+// bukan `.includes()` langsung ke string mentah. Kejadian nyata: judul junk
+// asli Otakudesu itu "Otakudesu - Download, Nonton, dan Streaming Anime
+// Subtitle Indonesia Lengkap dan Mudah" — ada KOMA setelah "Nonton". Guard
+// lama nyari substring persis 'nonton dan streaming anime' (tanpa koma),
+// jadi gagal match gara-gara beda satu tanda baca doang, dan judul junk itu
+// lolos dianggap valid → seluruh chain di belakangnya (resolveToMalId,
+// buildFallbackDetail) kebawa rusak (title/poster/synopsis semua garbage).
+function isJunkOtakudesuTitle(title: string): boolean {
+  const normalized = title.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim()
+  return normalized.includes('nonton dan streaming anime')
+    || normalized.includes('download nonton dan streaming')
+}
+
 // Ambil info mentah langsung dari Otakudesu (via proxy sendiri, fallback ke
 // WAJIK). Dipisah dari resolveToMalId supaya bisa dipakai ulang buat bangun
 // fallback detail kalau ternyata animenya belum ke-index di MAL/Jikan.
@@ -427,10 +467,10 @@ async function fetchOtakudesuRawInfo(animeId: string): Promise<OtakudesuRawInfo 
   // 1. Proxy sendiri dulu
   try {
     const proxyUrl = `${getBaseUrl()}/api/proxy/stream-indo?endpoint=anime-info&url=${encodeURIComponent(`https://otakudesu.blog/anime/${animeId}/`)}`
-    const infoRes = await fetch(proxyUrl, { next: { revalidate: 3600 } })
+    const infoRes = await fetch(proxyUrl, { next: { revalidate: 3600 }, headers: internalFetchHeaders() })
     if (infoRes.ok) {
       const d = (await infoRes.json())?.data
-      if (d?.title && !String(d.title).toLowerCase().includes('nonton dan streaming anime')) {
+      if (d?.title && !isJunkOtakudesuTitle(String(d.title))) {
         return {
           title: d.title,
           poster: d.poster ?? d.thumbnail ?? d.image ?? undefined,
@@ -457,7 +497,7 @@ async function fetchOtakudesuRawInfo(animeId: string): Promise<OtakudesuRawInfo 
     const wajikRes = await fetch(`${WAJIK}/anime/${animeId}`, { next: { revalidate: 3600 } })
     if (wajikRes.ok) {
       const d = (await wajikRes.json())?.data
-      if (d?.title) {
+      if (d?.title && !isJunkOtakudesuTitle(String(d.title))) {
         return {
           title: d.title,
           poster: d.poster ?? d.thumbnail ?? undefined,
@@ -828,7 +868,7 @@ export const animeApi = {
 
   home: async (page = '1'): Promise<{ ongoing: AnimeListItem[]; completed: AnimeListItem[] }> => {
     const [ongoingJson, completedJson] = await Promise.all([
-      safeFetchJson(`${getBaseUrl()}/api/proxy/stream-indo?endpoint=ongoing&page=${page}`, REVALIDATE_ONGOING),
+      safeFetchJson(`${getBaseUrl()}/api/proxy/stream-indo?endpoint=ongoing&page=${page}`, REVALIDATE_ONGOING, 2, 800, internalFetchHeaders()),
       safeFetchJikan(`${JIKAN}/top/anime?filter=bypopularity&page=${page}`, REVALIDATE_COMPLETED),
     ])
 

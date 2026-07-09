@@ -59,7 +59,17 @@ function SearchContent() {
 
         // ✅ fix: response ada di json.data.animeList, bukan json.data langsung
         const list = json?.data?.animeList ?? json?.data ?? []
-        if (!cancelled) setResults(Array.isArray(list) ? list : [])
+        if (!cancelled) {
+          const arr = Array.isArray(list) ? list : []
+          const seen = new Set<string>()
+          const uniqueList = arr.filter(item => {
+            if (!item || !item.animeId) return false
+            if (seen.has(item.animeId)) return false
+            seen.add(item.animeId)
+            return true
+          })
+          setResults(uniqueList)
+        }
       } catch (e) {
         console.error('[search] error:', e)
         if (!cancelled) setResults([])

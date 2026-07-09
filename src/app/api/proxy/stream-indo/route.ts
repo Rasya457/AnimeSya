@@ -318,21 +318,48 @@ async function fetchSingleUrl(url: string): Promise<string> {
     } catch { /* fall through */ }
 
     // 2. DNS bypass
-    const res = await withTimeout(
-        fetchWithDns(url, { headers: HTML_HDRS, cache: 'no-store' }),
-        5_000
-    )
-    if (!res.ok) throw new Error(`status-${res.status}`)
+    try {
+        const res = await withTimeout(
+            fetchWithDns(url, { headers: HTML_HDRS, cache: 'no-store' }),
+            5_000
+        )
+        if (res.ok) {
+            const html = await res.text()
+            if (
+                !isCloudflareChallenge(html) &&
+                !html.toLowerCase().includes('<title>page not found') &&
+                !html.toLowerCase().includes('<title>404')
+            ) {
+                return html
+            }
+        }
+    } catch { /* fall through */ }
 
-    const html = await res.text()
-    if (
-        isCloudflareChallenge(html) ||
-        html.toLowerCase().includes('<title>page not found') ||
-        html.toLowerCase().includes('<title>404')
-    ) {
-        throw new Error('invalid-html')
+    // 3. ScraperAPI fallback — kalau IP data center Vercel diblok (403) di
+    // kedua cara di atas, relay request lewat ScraperAPI yang pakai IP
+    // rotating/residential. Cuma kepakai kalau bener-bener kepepet, biar
+    // hemat quota free tier (1000 req/bulan).
+    const scraperKey = process.env.SCRAPER_API_KEY
+    if (scraperKey) {
+        const proxyUrl = `https://api.scraperapi.com/?api_key=${scraperKey}&url=${encodeURIComponent(url)}`
+        const res = await withTimeout(
+            fetch(proxyUrl, { cache: 'no-store' }),
+            15_000 // ScraperAPI relay lebih lambat, kasih timeout lebih panjang
+        )
+        if (!res.ok) throw new Error(`status-${res.status}`)
+
+        const html = await res.text()
+        if (
+            isCloudflareChallenge(html) ||
+            html.toLowerCase().includes('<title>page not found') ||
+            html.toLowerCase().includes('<title>404')
+        ) {
+            throw new Error('invalid-html')
+        }
+        return html
     }
-    return html
+
+    throw new Error('status-403')
 }
 
 export async function scrapeHtml(url: string): Promise<{ $: cheerio.CheerioAPI; html: string; base: string }> {
@@ -448,6 +475,17 @@ function isComingSoonEpisode(title: string, url: string, rawText = ''): boolean 
 function parsePositiveEpisodeParam(raw: string | null): number | null {
     if (!raw) return null
     const n = Number(raw)
+    return Number.isFinite(n) && n > 0 ? n : null
+}
+
+// Sama kayak parsePositiveEpisodeParam, tapi khusus buat param quality yang
+// formatnya bisa "1080" ATAU "1080p" (lihat convention &quality=720p di
+// endpoint /stream, line ~3406). Number("1080p") = NaN, jadi butuh parseInt
+// yang toleran biar endpoint multi-stream gak diam-diam kehilangan
+// preferredQuality-nya tiap kali frontend kirim quality pakai suffix "p".
+function parseQualityParam(raw: string | null): number | null {
+    if (!raw || raw === 'auto') return null
+    const n = parseInt(raw, 10)
     return Number.isFinite(n) && n > 0 ? n : null
 }
 
@@ -707,11 +745,19 @@ function parseMirrors(html: string): MirrorOption[] {
 
             const label = a.text().trim()
             if (isNonVideoMirrorLabel(label)) return
-            // Quality label biasanya ada di heading/elemen sebelum <ul> yang
-            // membungkus <li> berisi link ini (mis. "360p", "480p", "720p").
-            const li = a.closest('li')
-            const qualEl = (li.length ? li : a).closest('ul').prevAll('div,h3,span,strong,p').first()
-            const quality = qualEl.text().trim() || 'unknown'
+            // Quality: primer dari content.q (field "q" di JSON data-content yang
+            // udah di-decode, mis. {"id":199848,"i":0,"q":"720p"}) — ini yang
+            // sebenernya dipake Otakudesu buat nyimpen kualitas per mirror.
+            // Fallback ke tebakan posisi DOM (heading/elemen sebelum <ul>) cuma
+            // buat jaga-jaga kalau suatu saat field "q" hilang dari payload.
+            const contentQ = typeof content.q === 'string' ? content.q.trim() : ''
+            let quality = contentQ
+            if (!quality) {
+                const li = a.closest('li')
+                const qualEl = (li.length ? li : a).closest('ul').prevAll('div,h3,span,strong,p').first()
+                quality = qualEl.text().trim()
+            }
+            quality = quality || 'unknown'
 
             mirrors.push({ label, quality, content })
         })
@@ -991,10 +1037,18 @@ const ORDINAL_SEASON_WORDS: Record<string, string> = {
 }
 
 function normalizeOrdinalSeason(s: string): string {
-    return s.replace(
-        /\b(first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth)\s+season\b/gi,
-        (_, word: string) => `Season ${ORDINAL_SEASON_WORDS[word.toLowerCase()]}`
-    )
+    return s
+        .replace(
+            /\b(first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth)\s+season\b/gi,
+            (_, word: string) => `Season ${ORDINAL_SEASON_WORDS[word.toLowerCase()]}`
+        )
+        // MAL/Jikan juga sering pake ordinal numerik ("2nd Season", "3rd
+        // Season") — ini format asli yang dipake buat JJK S2, jadi harus
+        // ditangkep juga, bukan cuma bentuk kata ("Second Season").
+        .replace(
+            /\b(\d+)(?:st|nd|rd|th)\s+season\b/gi,
+            (_, num: string) => `Season ${num}`
+        )
 }
 
 function titleVariants(raw: string): string[] {
@@ -1157,26 +1211,116 @@ async function fetchJikanTitlesByMalId(malId: string): Promise<{ primary: string
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Season-number extraction — dipakai titleSimilarity buat nyegah "Jujutsu
+// Kaisen Season 2" ke-match ke listing "Jujutsu Kaisen" (Season 1) cuma
+// karena substring match dapet skor tinggi (0.9) tanpa peduli nomor season.
+// Kalau kedua judul sama-sama punya nomor season yang KETAUAN beda, itu
+// pasti anime/season yang beda — gak peduli seberapa mirip teksnya.
+// undefined = gak ada indikasi season sama sekali → dianggap ambigu, gak
+// dipakai buat penalti (biar gak salah nolak match yang sebenernya bener).
+// null secara eksplisit dianggap "Season 1 implisit" HANYA kalau title
+// laen dalam perbandingan itu punya season eksplisit ≥ 2 — supaya "Jujutsu
+// Kaisen" (polos, tanpa season) tetep konsisten diperlakukan sebagai S1
+// pas dibandingin ke "Jujutsu Kaisen Season 2".
+// ─────────────────────────────────────────────────────────────────────────────
+function extractSeasonNumber(s: string): number | null {
+    const norm = normalizeOrdinalSeason(s)
+    const m = norm.match(/\bseason\s*(\d+)\b/i) ?? norm.match(/\bs(\d+)\b/i)
+    if (m) return parseInt(m[1], 10)
+    const romanMatch = norm.match(/\b(ii|iii|iv|v|vi|vii|viii|ix|x)\b/i)
+    if (romanMatch) {
+        const romanMap: Record<string, number> = {
+            ii: 2, iii: 3, iv: 4, v: 5, vi: 6, vii: 7, viii: 8, ix: 9, x: 10
+        }
+        return romanMap[romanMatch[1].toLowerCase()] ?? null
+    }
+    return null
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Title similarity scorer — returns 0-1 (1 = perfect match)
 // ─────────────────────────────────────────────────────────────────────────────
+// Edit distance sederhana — dipakai buat toleransi typo minor di titleSimilarity
+// (situs sumber kadang salah ketik 1 huruf di title card, cth "Tomb Rider
+// King" harusnya "Tomb Raider King"). Title anime pendek (2-6 kata), jadi
+// biaya O(len(a)*len(b)) per pasangan kata gak masalah.
+function levenshtein(a: string, b: string): number {
+    const m = a.length, n = b.length
+    if (m === 0) return n
+    if (n === 0) return m
+    const dp: number[][] = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0))
+    for (let i = 0; i <= m; i++) dp[i][0] = i
+    for (let j = 0; j <= n; j++) dp[0][j] = j
+    for (let i = 1; i <= m; i++) {
+        for (let j = 1; j <= n; j++) {
+            dp[i][j] = a[i - 1] === b[j - 1]
+                ? dp[i - 1][j - 1]
+                : 1 + Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1])
+        }
+    }
+    return dp[m][n]
+}
+
 function titleSimilarity(a: string, b: string): number {
     const normalize = (s: string) =>
         normalizeOrdinalSeason(s)
             .toLowerCase()
+            .replace(/\b(ii|iii|iv|v|vi|vii|viii|ix|x)\b/g, m => {
+                const map: Record<string, string> = {
+                    ii: '2', iii: '3', iv: '4', v: '5', vi: '6', vii: '7', viii: '8', ix: '9', x: '10'
+                }
+                return map[m] ?? m
+            })
             .replace(/[^a-z0-9\s]/g, ' ')
             .replace(/\s+/g, ' ')
             .trim()
     const na = normalize(a)
     const nb = normalize(b)
     if (na === nb) return 1
+
+    // Season-mismatch guard — dicek DULUAN sebelum substring/word-overlap,
+    // karena keduanya buta soal nomor season dan bisa ngasih skor tinggi ke
+    // season yang salah (ex: "Jujutsu Kaisen" vs "Jujutsu Kaisen Season 2"
+    // dapet 0.9 dari substring match doang, padahal itu season yang beda).
+    // Kalau salah satu eksplisit nyebut season tertentu dan yang lain
+    // eksplisit nyebut season LAIN (atau gak nyebut sama sekali → dianggap
+    // S1 implisit), itu pasti bukan match yang sama — skor dijatuhin jauh
+    // di bawah threshold manapun, gak peduli semirip apa teksnya.
+    const seasonA = extractSeasonNumber(a)
+    const seasonB = extractSeasonNumber(b)
+    const effectiveSeasonA = seasonA ?? 1
+    const effectiveSeasonB = seasonB ?? 1
+    if ((seasonA !== null || seasonB !== null) && effectiveSeasonA !== effectiveSeasonB) {
+        return 0.05
+    }
+
     if (na.includes(nb) || nb.includes(na)) return 0.9
-    // word overlap
+    // word overlap — exact match dulu, baru fuzzy fallback buat kata yang
+    // cukup panjang (>=5 huruf) supaya typo 1 huruf di situs sumber (cth
+    // Sokuja nulis "Tomb Rider King" padahal harusnya "Tomb Raider King")
+    // gak dianggap DUA KATA TOTAL BEDA — itu yang bikin match yang jelas
+    // sama malah jatuh ke skor pas-pasan dan gagal lolos gate confidence
+    // (CONFIDENT_MATCH_SCORE) walau title-nya udah lolos search threshold.
+    // Credit fuzzy sengaja dikasih 0.8 (bukan 1 penuh) — tetep kurang yakin
+    // drpd exact match beneran.
     const wordsA = new Set(na.split(' '))
     const wordsB = new Set(nb.split(' '))
-    const intersection = [...wordsA].filter(w => wordsB.has(w) && w.length > 2)
+    const arrA = [...wordsA].filter(w => w.length > 2 || /^\d+$/.test(w))
+    const arrB = [...wordsB].filter(w => w.length > 2 || /^\d+$/.test(w))
+    const usedB = new Set<string>()
+    let matchedCredit = 0
+    for (const wa of arrA) {
+        if (wordsB.has(wa)) { matchedCredit += 1; usedB.add(wa); continue }
+        if (wa.length >= 5) {
+            const near = arrB.find(wb => wb.length >= 5 && !usedB.has(wb) && levenshtein(wa, wb) <= 1)
+            if (near) { matchedCredit += 0.8; usedB.add(near) }
+        }
+    }
     const union = new Set([...wordsA, ...wordsB])
-    return intersection.length / union.size
+    return matchedCredit / union.size
 }
+
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // wajik API fast-path — tries the public wajik-anime-api first (JSON API)
@@ -1679,6 +1823,72 @@ const JS_VIDEO_PATTERNS: RegExp[] = [
     /(?:file|source|src|videoUrl)\s*[:=]\s*["'`](https?:\/\/[^"'`\s]{10,})["'`]/i,
 ]
 
+function unpackPackerScript(html: string): string[] {
+    const foundUrls: string[] = []
+    const target = 'eval(function(p,a,c,k,e,d)'
+    let startIdx = 0
+
+    while (true) {
+        const idx = html.indexOf(target, startIdx)
+        if (idx === -1) break
+        startIdx = idx + target.length
+
+        // Find matching parentheses for eval(...)
+        let parenCount = 0
+        let startOfArgs = -1
+        for (let i = idx + 4; i < html.length; i++) {
+            if (html[i] === '(') {
+                if (parenCount === 0) {
+                    startOfArgs = i
+                }
+                parenCount++
+            } else if (html[i] === ')') {
+                parenCount--
+                if (parenCount === 0) {
+                    const evalContent = html.slice(startOfArgs, i + 1)
+                    const invocationIdx = evalContent.lastIndexOf('}(')
+                    if (invocationIdx !== -1) {
+                        let argsStr = evalContent.slice(invocationIdx + 2, evalContent.length - 1).trim()
+                        if (argsStr.endsWith(".split('|'))")) {
+                            argsStr = argsStr.slice(0, -1)
+                        } else if (argsStr.endsWith(")")) {
+                            argsStr = argsStr.slice(0, -1)
+                        }
+
+                        try {
+                            const args = new Function(`return [${argsStr}]`)()
+                            const p = args[0]
+                            const a = parseInt(args[1])
+                            const c = parseInt(args[2])
+                            const k = args[3]
+
+                            if (p && a && c && k) {
+                                let unpacked = p
+                                let count = c
+                                while (count--) {
+                                    if (k[count]) {
+                                        unpacked = unpacked.replace(new RegExp('\\b' + count.toString(a) + '\\b', 'g'), k[count])
+                                    }
+                                }
+                                const urls = unpacked.match(/https?:\/\/[^"'\s]+/gi) ?? []
+                                for (const u of urls) {
+                                    if (u.includes('.m3u8') || u.includes('.mp4')) {
+                                        foundUrls.push(u)
+                                    }
+                                }
+                            }
+                        } catch (e) {
+                            // Ignore error
+                        }
+                    }
+                    break
+                }
+            }
+        }
+    }
+    return foundUrls
+}
+
 async function extractDirectVideoUrl(iframeSrc: string, referer?: string): Promise<string | null> {
     try {
         if (VIDEO_EXT_RE.test(iframeSrc)) return iframeSrc
@@ -1740,6 +1950,12 @@ async function extractDirectVideoUrl(iframeSrc: string, referer?: string): Promi
                     }
                 }
             }
+        }
+
+        // ── 2.5 Packed Script Unpacking ───────────────────────────────────────
+        const packedUrls = unpackPackerScript(html)
+        if (packedUrls.length > 0) {
+            return packedUrls[0]
         }
 
         // ── 3. Raw HTML scan — last resort ────────────────────────────────────
@@ -2253,6 +2469,7 @@ async function nontonEpisodes(animeUrl: string): Promise<EpisodeEntry[]> {
     const $ = cheerio.load(html)
     const base = new URL(animeUrl).origin
     const normalizedAnimeUrl = animeUrl.replace(/\/$/, '')
+    const animeSlug = extractSlug(animeUrl) // ex: "grand-blue-season-2"
     const entries: EpisodeEntry[] = []
     const seen = new Set<string>()
 
@@ -2262,6 +2479,15 @@ async function nontonEpisodes(animeUrl: string): Promise<EpisodeEntry[]> {
         if (!href || seen.has(href)) return
         if (/\/(anime|genres|studio|network|season|country|az-lists|author|page)\//.test(href)) return
         if (href.replace(/\/$/, '') === normalizedAnimeUrl) return
+
+        // Filter WAJIB: halaman anime NontonAnimeID biasanya juga nampilin
+        // widget "episode terbaru" / "rekomendasi" yang isinya link episode
+        // dari anime LAIN — tanpa filter ini semua ikut kescrape dan bikin
+        // episodes.find() bisa nyasar ke URL anime yang salah sama sekali.
+        // URL episode asli SELALU diawalin slug anime-nya sendiri:
+        // {base}/{anime-slug}-episode-NN(-tamat)?(-subtitle-indonesia)?/
+        const path = href.replace(base, '').replace(/^\//, '').replace(/\/$/, '')
+        if (!path.startsWith(`${animeSlug}-episode-`) && !path.startsWith(`${animeSlug}-eps-`)) return
 
         const text = a.text().trim()
         if (!/\beps?\b|\bepisode\b/i.test(text)) return
@@ -2662,7 +2888,17 @@ async function sokujEpisodes(animeUrl: string): Promise<EpisodeEntry[]> {
         const full = href.startsWith('http') ? href : `${base}${href}`
         if (full === animeUrl.replace(/\/$/, '') || full === animeUrl) return
         seen.add(href)
-        const epNum = parseEpisodeNumber(label || href, full)
+        // Bug fix: label text dari cheerio .text() sering kegabung sama badge
+        // relative-time tanpa spasi (cth: "Episode 1" + "3 tahun lalu" jadi
+        // "Episode 13 tahun lalu"), sama persis kayak masalah yang ngerusak
+        // cleanSokujCardTitle. parseEpisodeNumber(label, ...) kejebak nangkep
+        // "13" padahal URL-nya jelas "-episode-1-...". Karena href di titik
+        // ini udah lolos validasi wajib punya pola "-episode-N-"/"-eps-N-"
+        // (lihat guard di atas), ambil angkanya LANGSUNG dari situ dulu —
+        // baru fallback ke parseEpisodeNumber(label) kalau entah kenapa gak
+        // ketemu (misal video-only slug tanpa nomor eksplisit di URL).
+        const urlEpMatch = href.match(/-(?:episode|eps)-(\d+(?:\.\d+)?)(?=-|\/|$)/i)
+        const epNum = urlEpMatch ? parseFloat(urlEpMatch[1]) : parseEpisodeNumber(label || href, full)
         entries.push({ episode: epNum, title: label || `Episode ${epNum}`, url: full })
 
         // Tangkap slug asli dari episode link PERTAMA yang lolos validasi
@@ -2833,10 +3069,16 @@ interface SokujMirrorRaw {
     id: number
     serverName: string
     embedUrl: string
-    embedType: string // "mp4" yang kepake; abaikan tipe lain (iframe/dll) kalau ada
+    embedType: string // "mp4" atau "hls" yang kepake; abaikan tipe lain (iframe/dll) kalau ada
     quality: string // "480p" | "720p" | "1080p"
 }
 interface SokujMirrorsResponse { mirrors: SokujMirrorRaw[] }
+
+// 1080p di Sokuja sering diserve lewat HLS (embedType "hls" → .m3u8), bukan
+// direct MP4 — confirmed via debug-sokuja pada episode 1080p. Proxy stream
+// endpoint kita udah handle manifest rewriting buat .m3u8 (lihat isManifest
+// di bawah), jadi aman diterima di sini juga.
+const SOKUJ_ACCEPTED_EMBED_TYPES = new Set(['mp4', 'hls'])
 
 async function sokujVideoMirrors(episodeId: number): Promise<SokujSource[]> {
     const cacheKey = `sokuja-mirrors:${episodeId}`
@@ -2856,7 +3098,7 @@ async function sokujVideoMirrors(episodeId: number): Promise<SokujSource[]> {
 
             const json = await res.json() as SokujMirrorsResponse
             const sources: SokujSource[] = (json.mirrors ?? [])
-                .filter(m => m.embedType === 'mp4' && !!m.embedUrl)
+                .filter(m => SOKUJ_ACCEPTED_EMBED_TYPES.has(m.embedType) && !!m.embedUrl)
                 .map(m => ({ url: m.embedUrl, quality: parseInt(m.quality, 10) || null }))
 
             if (sources.length > 0) {
@@ -2961,16 +3203,65 @@ const CROSS_SOURCE_TITLE_THRESHOLD = 0.45
 
 async function findEpisodeUrlOnAdapter(
     adapter: SourceAdapter,
-    animeTitle: string,
+    animeTitles: string | string[],
     episodeNum: number,
 ): Promise<{ url: string; score: number } | null> {
     try {
-        const results = await adapter.search(animeTitle)
+        // Bug fix: dulu cuma nerima SATU title (primary), jadi kalau situs
+        // adapter nulis nama anime itu pake konvensi yang beda total dari
+        // primary (misal romanisasi Korea "Dogul Wang" vs judul resmi
+        // Inggris "Tomb Raider King" — zero word overlap), gak ada variant
+        // ataupun skor yang bisa nembus CROSS_SOURCE_TITLE_THRESHOLD sama
+        // sekali, walau alt title yang bener sebenarnya udah ada di tangan
+        // (dari Jikan) — cuma gak pernah dioper ke sini. Sekarang terima
+        // array title (primary + alts), generate variants dari SEMUANYA,
+        // dan skor tiap kandidat pakai skor TERTINGGI di antara semua title
+        // itu — bukan cuma dibanding primary doang.
+        const titles = (Array.isArray(animeTitles) ? animeTitles : [animeTitles])
+            .map(t => t.trim())
+            .filter(Boolean)
+        if (titles.length === 0) return null
+
+        // Bug fix: dulu cuma nembak 1 query (animeTitle mentah) ke adapter.search().
+        // Kalau title-nya format ordinal dari Jikan ("Jujutsu Kaisen 2nd Season")
+        // sementara situs adapter nulisnya numeral ("Jujutsu Kaisen Season 2"),
+        // literal text-search sering nol hasil sama sekali — search-nya gak
+        // pernah dapet KESEMPATAN buat scoring, langsung return null di awal.
+        // Sekarang pakai titleVariants() yang sama kayak jalur Otakudesu
+        // (searchBest), biar ada beberapa bentuk title yang dicoba: ordinal-
+        // normalized, tanpa-season, tanpa-subtitle, dst — query yang gak ada
+        // hasilnya di-skip diam-diam, gak bikin keseluruhan pencarian gagal.
+        const variantSet = new Set<string>()
+        for (const t of titles) for (const v of titleVariants(t)) variantSet.add(v)
+        const variants = [...variantSet].slice(0, SEARCH_MAX_QUERIES)
+
+        const perVariantResults = await Promise.allSettled(
+            variants.map(v => adapter.search(v))
+        )
+
+        const seenUrls = new Set<string>()
+        const results: SearchResult[] = []
+        for (const outcome of perVariantResults) {
+            if (outcome.status !== 'fulfilled' || !outcome.value) continue
+            for (const r of outcome.value) {
+                if (seenUrls.has(r.url)) continue
+                seenUrls.add(r.url)
+                results.push(r)
+            }
+        }
         if (results.length === 0) return null
 
         let best: { result: SearchResult; score: number } | null = null
         for (const r of results) {
-            const score = titleSimilarity(animeTitle, r.title)
+            // Skor dibandingin ke SEMUA title yang kita punya (primary + alts),
+            // ambil yang tertinggi — variant cuma alat bantu nyari kandidat,
+            // tapi skor akhir harus ngasih kesempatan ke title manapun yang
+            // paling cocok, bukan cuma primary.
+            let score = 0
+            for (const t of titles) {
+                const s = titleSimilarity(t, r.title)
+                if (s > score) score = s
+            }
             if (!best || score > best.score) best = { result: r, score }
         }
         if (!best || best.score < CROSS_SOURCE_TITLE_THRESHOLD) return null
@@ -3008,28 +3299,50 @@ async function resolveStreamMultiSource(
     episodeNum: number,
     preferredQuality?: number | null,
     adapters: SourceAdapter[] = SOURCE_ADAPTERS,
+    altTitles: string[] = [],
 ): Promise<MultiSourceResult | null> {
+    const allTitles = [animeTitle, ...altTitles]
     const animeKey = animeTitle.toLowerCase().trim().replace(/\s+/g, '-')
-    const prefKey = `source-pref:${animeKey}`
+    // Sertakan quality bucket di key — race 720p dan 1080p harus punya sticky
+    // masing-masing. Tanpa ini, kalau race 720p menang Otakudesu, sticky itu
+    // akan dipakai juga buat request 1080p sehingga Sokuja (yang mungkin punya
+    // 1080p) tidak pernah dicoba. Bucket: 1080 = 1080p, 720 = default/720p.
+    const qualityBucket = preferredQuality && preferredQuality >= 1080 ? '1080' : '720'
+    const prefKey = `source-pref:${animeKey}:${qualityBucket}`
     const stickyId = cacheGet<string>(prefKey)
 
-    if (stickyId) {
+    // Sticky cuma dipercaya kalau yang di-lock itu adapter TOP-PRIORITY
+    // (adapters[0] — Sokuja). Kalau sticky-nya ke adapter prioritas lebih
+    // rendah (Otakudesu dll, dari race SEBELUM Sokuja tersedia/keburu
+    // menang), jangan dipercaya buta — race ulang tiap kali, biar Sokuja
+    // selalu dikasih kesempatan lagi walau adapter lain "udah cukup bagus".
+    // Tanpa ini, begitu Otakudesu menang sekali, dia locked 6 jam penuh dan
+    // Sokuja gak pernah dicek ulang sama sekali walau ternyata udah punya
+    // episode itu dengan quality yang jauh lebih baik.
+    if (stickyId && stickyId === adapters[0]?.id) {
         const adapter = adapters.find(a => a.id === stickyId)
         if (adapter) {
-            const found = await findEpisodeUrlOnAdapter(adapter, animeTitle, episodeNum)
+            const found = await findEpisodeUrlOnAdapter(adapter, allTitles, episodeNum)
             if (found) {
                 const stream = await adapter.resolveStream(found.url, preferredQuality).catch(() => null)
-                if (stream?.resolved && (stream.availableQualities[0] ?? 0) >= STICKY_QUALITY_THRESHOLD) {
+                // Bug fix: dulu selalu bandingin ke STICKY_QUALITY_THRESHOLD (720)
+                // walau user minta quality lebih tinggi (misal 1080p). Akibatnya kalau
+                // Sokuja cuma punya 720p buat episode ini, sticky check tetep lolos
+                // (720>=720) dan langsung return TANPA race ulang ke adapter lain yang
+                // mungkin justru punya 1080p. Sekarang pakai preferredQuality kalau ada,
+                // sama kayak logic minQ di full race di bawah.
+                const minQ = preferredQuality ?? STICKY_QUALITY_THRESHOLD
+                if (stream?.resolved && (stream.availableQualities[0] ?? 0) >= minQ) {
                     return { adapterId: stickyId, episodeUrl: found.url, stream, titleScore: found.score }
                 }
-                // gagal / kualitas kurang dari threshold → lanjut ke race di bawah
+                // gagal / kualitas kurang dari yang diminta → lanjut ke race di bawah
             }
         }
     }
 
     const settled = await raceAllWithCap(
         adapters.map(async adapter => {
-            const found = await findEpisodeUrlOnAdapter(adapter, animeTitle, episodeNum)
+            const found = await findEpisodeUrlOnAdapter(adapter, allTitles, episodeNum)
             if (!found) throw new Error('not-found')
             const stream = await adapter.resolveStream(found.url, preferredQuality)
             if (!stream.resolved) throw new Error('not-resolved')
@@ -3051,10 +3364,24 @@ async function resolveStreamMultiSource(
         const bConfident = b.titleScore >= CONFIDENT_MATCH_SCORE ? 1 : 0
         if (aConfident !== bConfident) return bConfident - aConfident
 
-        // Prioritas #2 (di dalam tier confidence yang sama): quality >= 720p
-        // dianggap "cukup bagus", baru dibandingin angka quality-nya.
-        const aOk = (a.stream.availableQualities[0] ?? 0) >= STICKY_QUALITY_THRESHOLD ? 1 : 0
-        const bOk = (b.stream.availableQualities[0] ?? 0) >= STICKY_QUALITY_THRESHOLD ? 1 : 0
+        // Prioritas #2: quality "cukup" = >= preferredQuality kalau user pilih,
+        // atau >= STICKY_QUALITY_THRESHOLD (720p) kalau auto.
+        const minQ = preferredQuality ?? STICKY_QUALITY_THRESHOLD
+        const aOk = (a.stream.availableQualities[0] ?? 0) >= minQ ? 1 : 0
+        const bOk = (b.stream.availableQualities[0] ?? 0) >= minQ ? 1 : 0
+
+        // Prioritas #3: kalau KEDUANYA punya quality yang cukup, prefer adapter
+        // yang urutannya lebih depan di SOURCE_ADAPTERS — Sokuja ada di index 0,
+        // jadi dia menang selama qualitynya terpenuhi. Otakudesu cuma dipilih
+        // kalau Sokuja gagal/gak ketemu/qualitynya kurang.
+        if (aOk && bOk) {
+            const aIdx = adapters.findIndex(ad => ad.id === a.adapterId)
+            const bIdx = adapters.findIndex(ad => ad.id === b.adapterId)
+            if (aIdx !== bIdx) return aIdx - bIdx  // lower index = higher priority
+        }
+
+        // Prioritas #4: salah satu gak punya quality cukup → yang punya menang.
+        // Kalau keduanya sama-sama kurang, pilih yang qualitynya lebih tinggi.
         if (aOk !== bOk) return bOk - aOk
         return (b.stream.availableQualities[0] ?? 0) - (a.stream.availableQualities[0] ?? 0)
     })
@@ -3662,7 +3989,18 @@ export async function GET(req: Request) {
         if (endpoint === 'multi-stream') {
             const title = searchParams.get('title')
             const episodeParam = searchParams.get('episode')
-            const preferredQuality = parsePositiveEpisodeParam(searchParams.get('quality'))
+            const preferredQuality = parseQualityParam(searchParams.get('quality'))
+            // Bug fix: sebelumnya cuma nerima 1 title, jadi anime yang alt
+            // title-nya jauh beda dari primary (mis. romanisasi Korea vs
+            // judul resmi Inggris — "Dogul Wang" vs "Tomb Raider King") gak
+            // pernah lolos CROSS_SOURCE_TITLE_THRESHOLD di adapter manapun
+            // yang nulis nama itu beda dari primary. Sama pola-nya kayak
+            // altTitles di endpoint /auto — client kirim comma-separated
+            // alt titles (dari Jikan synonyms yang emang udah dia punya).
+            const altTitlesParam = searchParams.get('altTitles')
+            const altTitlesList = altTitlesParam
+                ? altTitlesParam.split(',').map((t: string) => t.trim()).filter(Boolean)
+                : []
 
             if (!title || !episodeParam)
                 return Response.json({ error: 'title & episode required' }, { status: 400 })
@@ -3671,7 +4009,7 @@ export async function GET(req: Request) {
             if (isNaN(episodeNum))
                 return Response.json({ error: 'episode harus angka' }, { status: 400 })
 
-            const result = await resolveStreamMultiSource(title, episodeNum, preferredQuality)
+            const result = await resolveStreamMultiSource(title, episodeNum, preferredQuality, SOURCE_ADAPTERS, altTitlesList)
             if (!result)
                 return Response.json(
                     { error: `Episode ${episodeNum} dari "${title}" gak ketemu di semua source yang aktif` },
@@ -3905,6 +4243,121 @@ export async function GET(req: Request) {
                 })
             } catch (e: any) {
                 return Response.json({ query: q, error: e.message }, { status: 500 })
+            }
+        }
+
+        // ── debug-nonton ─────────────────────────────────────────────────────
+        // Sama kayak debug-sokuja — dump HTML mentah + semua kandidat sumber
+        // video dari episode NontonAnimeID, biar nontonExtractInlineSources()
+        // (yang masih tebakan, belum diverifikasi ke HTML asli) bisa dibenerin
+        // berdasarkan struktur beneran, bukan nebak lagi.
+        //
+        // Usage: ?endpoint=debug-nonton&url=<url_episode>
+        if (endpoint === 'debug-nonton') {
+            const url = searchParams.get('url')
+            if (!url) return Response.json({ error: 'url required' }, { status: 400 })
+
+            try {
+                const html = await nontonFetchHtml(url)
+                const $ = cheerio.load(html)
+                const inline = nontonExtractInlineSources(html)
+
+                const videoTags: { tag: string; attrs: Record<string, string> }[] = []
+                $('video, video source').each((_, el) => {
+                    videoTags.push({ tag: el.tagName, attrs: { ...(el as any).attribs } })
+                })
+
+                const iframes: { src: string; attrs: Record<string, string> }[] = []
+                $('iframe').each((_, el) => {
+                    const src = ($(el).attr('src') ?? $(el).attr('data-src') ?? '').trim()
+                    if (src) iframes.push({ src, attrs: { ...(el as any).attribs } })
+                })
+
+                // Kalau ada iframe, fetch ISINYA juga — extractDirectVideoUrl
+                // udah lolos threshold host score tapi gagal nemu apa-apa,
+                // jadi kita perlu liat mentahan HTML embed-nya sendiri
+                // (Blogger/host lain), bukan cuma HTML halaman episode.
+                let iframeInspection: any = null
+                if (iframes.length > 0) {
+                    const iframeSrc = iframes[0].src
+                    try {
+                        const origin = new URL(iframeSrc).origin
+                        const iframeRes = await withTimeout(
+                            fetchWithDns(iframeSrc, {
+                                headers: {
+                                    ...HTML_HDRS,
+                                    Referer: url,
+                                    Origin: origin,
+                                    'Sec-Fetch-Dest': 'iframe',
+                                    'Sec-Fetch-Mode': 'navigate',
+                                },
+                                cache: 'no-store',
+                            }),
+                            8_000
+                        )
+                        const iframeHtml = iframeRes.ok ? await iframeRes.text() : ''
+                        const $$ = iframeHtml ? cheerio.load(iframeHtml) : null
+                        iframeInspection = {
+                            src: iframeSrc,
+                            status: iframeRes.status,
+                            htmlLength: iframeHtml.length,
+                            tagSrc: $$ ? ($$('source[src]').attr('src') ?? $$('video[src]').attr('src') ?? null) : null,
+                            videoTags: $$ ? $$('video, source').map((_, el) => ({ ...(el as any).attribs })).get().slice(0, 10) : [],
+                            hasVideoExt: VIDEO_EXT_RE.test(iframeHtml),
+                            snippet: iframeHtml.slice(0, 2000),
+                            scriptSnippetsWithVideoKeyword: $$
+                                ? $$('script').map((_, el) => {
+                                    if ($(el).attr('src')) return null
+                                    const t = $$(el).html() ?? ''
+                                    return /\.(mp4|m3u8)|videoUrl|VIDEO_CONFIG|streams?\s*[:=]/i.test(t) ? t.slice(0, 1500) : null
+                                }).get().filter(Boolean).slice(0, 5)
+                                : [],
+                        }
+                    } catch (e: any) {
+                        iframeInspection = { src: iframeSrc, error: e.message }
+                    }
+                }
+
+                // Elemen yang keliatan kayak tombol/tab pilihan server/kualitas
+                const serverTabs: string[] = []
+                $('a, button, li, div').each((_, el) => {
+                    const text = $(el).text().trim()
+                    if (/^server\s|^\d{3,4}p$/i.test(text) && text.length < 40) serverTabs.push(text)
+                })
+
+                return Response.json({
+                    url,
+                    htmlLength: html.length,
+                    inlineSourcesFound: inline,
+                    videoTags: videoTags.slice(0, 10),
+                    iframes: iframes.slice(0, 10),
+                    iframeInspection,
+                    serverTabsGuess: [...new Set(serverTabs)].slice(0, 20),
+                    // Potongan HTML di sekitar keyword umum player/video
+                    htmlVideoContext: (() => {
+                        const keywords = ['m3u8', '.mp4', 'file:', 'source:', 'src:', 'player', 'data-video', 'data-src', 'iframe', 'window.__']
+                        const hits: { kw: string; ctx: string }[] = []
+                        for (const kw of keywords) {
+                            const idx = html.indexOf(kw)
+                            if (idx >= 0) hits.push({ kw, ctx: html.slice(Math.max(0, idx - 80), idx + 150) })
+                        }
+                        return hits
+                    })(),
+                    windowAssignments: [...html.matchAll(/window\.(__[A-Z_]+|[A-Z_]{2,})\s*=/g)].map(m => m[0]).slice(0, 20),
+                    scriptSnippetsWithVideoKeyword: (() => {
+                        const out: string[] = []
+                        $('script').each((_, el) => {
+                            if ($(el).attr('src')) return
+                            const text = $(el).html() ?? ''
+                            if (/\.(mp4|m3u8)|videoUrl|player|source\s*:/i.test(text)) {
+                                out.push(text.slice(0, 1500))
+                            }
+                        })
+                        return out.slice(0, 5)
+                    })(),
+                })
+            } catch (e: any) {
+                return Response.json({ url, error: e.message }, { status: 500 })
             }
         }
 
