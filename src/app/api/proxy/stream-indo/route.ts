@@ -3449,12 +3449,14 @@ export async function GET(req: Request) {
                 // atau down, lanjut ke mirror berikutnya alih-alih langsung gagal.
                 let html: string | null = null
                 let lastErr: Error | null = null
+                let usedMirror: string = MIRRORS[0]
                 for (const mirror of MIRRORS) {
                     const pageUrl = page === 1
                         ? `${mirror}/ongoing-anime/`
                         : `${mirror}/ongoing-anime/page/${page}/`
                     try {
                         html = await fetchSingleUrl(pageUrl)
+                        usedMirror = mirror
                         break
                     } catch (e) {
                         lastErr = e as Error
@@ -3479,11 +3481,33 @@ export async function GET(req: Request) {
                         || ''
                     if (!title) return
 
-                    // Poster: ambil srcset (resolusi lebih besar) atau src
+                    // Poster: ambil srcset (resolusi lebih besar) atau src.
+                    // Tema ini lazy-load gambar (src cuma placeholder blank/gif),
+                    // jadi kalau srcset & src kosong/placeholder, coba atribut
+                    // lazy-load umum (data-src/data-lazy-src/data-original) —
+                    // pola yang sama udah dipakai di scraper lain di file ini.
                     const $img = $li.find('.thumb img').first()
-                    const srcset = $img.attr('srcset') ?? ''
+                    const srcset = $img.attr('srcset') ?? $img.attr('data-srcset') ?? ''
                     const srcsetFirst = srcset.split(',')[0]?.trim().split(' ')[0] ?? ''
-                    const poster = srcsetFirst || $img.attr('src') || ''
+                    let poster =
+                        srcsetFirst ||
+                        $img.attr('data-src') ||
+                        $img.attr('data-lazy-src') ||
+                        $img.attr('data-original') ||
+                        $img.attr('src') ||
+                        ''
+
+                    // Normalize ke absolute URL — kalau hasil scrape relative
+                    // (atau protocol-relative "//..."), frontend di domain lain
+                    // (Vercel) bakal coba load dari domain-nya sendiri dan 404,
+                    // bikin poster keliatan ga muncul. Samain sama parseAnimeInfo().
+                    if (poster && !/^https?:/.test(poster)) {
+                        if (poster.startsWith('//')) {
+                            poster = `https:${poster}`
+                        } else {
+                            poster = poster.startsWith('/') ? `${usedMirror}${poster}` : `${usedMirror}/${poster}`
+                        }
+                    }
 
                     // Episode dari ".epz": "Episode 8" → "8"
                     const epzText = $li.find('.epz').text().replace(/episode/i, '').trim()

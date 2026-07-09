@@ -950,7 +950,7 @@ export const animeApi = {
   },
 
   home: async (page = '1'): Promise<{ ongoing: AnimeListItem[]; completed: AnimeListItem[] }> => {
-    const [ongoing, completedJson] = await Promise.all([
+    let [ongoing, completedJson] = await Promise.all([
       scrapeOtakudesuOngoing(page, REVALIDATE_ONGOING),
       safeFetchJikan(`${JIKAN}/top/anime?filter=bypopularity&page=${page}`, REVALIDATE_COMPLETED),
     ])
@@ -958,6 +958,15 @@ export const animeApi = {
     const completed = Array.isArray(completedJson?.data)
       ? completedJson.data.map(mapJikanListItem)
       : []
+
+    // Fallback jika Otakudesu diblokir Cloudflare di Vercel (maka scraping ongoing menghasilkan empty array)
+    if (ongoing.length === 0) {
+      console.warn('[anime-api] Otakudesu ongoing list is empty or blocked. Falling back to Jikan seasons/now...')
+      const fallbackJson = await safeFetchJikan(`${JIKAN}/seasons/now?limit=24`, REVALIDATE_ONGOING)
+      if (Array.isArray(fallbackJson?.data)) {
+        ongoing = fallbackJson.data.map(mapJikanListItem)
+      }
+    }
 
     const dedup = (list: AnimeListItem[]) => {
       const seen = new Set<string>()
