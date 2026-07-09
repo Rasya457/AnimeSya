@@ -904,10 +904,25 @@ export const animeApi = {
         return 0            // sisanya (side story, spin-off, dll) tetep urutan asli
       })
 
+    const altTitles: string[] = []
+    if (a.title_english) altTitles.push(a.title_english)
+    if (Array.isArray(a.title_synonyms)) {
+      altTitles.push(...a.title_synonyms)
+    }
+    if (Array.isArray(a.titles)) {
+      a.titles.forEach((t: any) => {
+        if (t.title && typeof t.title === 'string' && t.type !== 'Japanese') {
+          altTitles.push(t.title)
+        }
+      })
+    }
+    const uniqueAltTitles = [...new Set(altTitles)].filter(t => t !== a.title)
+
     return {
       slug: malId,
       title: a.title ?? '',
       alternativeTitle: a.title_english ?? undefined,
+      altTitles: uniqueAltTitles,
       poster: a.images?.jpg?.large_image_url ?? a.images?.jpg?.image_url ?? '',
       score: a.score ?? 0,
       status: mapStatus(a.status ?? ''),

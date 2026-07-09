@@ -77,6 +77,7 @@ export interface AnimeDetail {
   slug: string
   title: string
   alternativeTitle?: string
+  altTitles?: string[]
   poster: string
   score: number
   status: 'Ongoing' | 'Completed'

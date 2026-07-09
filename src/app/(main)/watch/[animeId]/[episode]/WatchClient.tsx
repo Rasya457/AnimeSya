@@ -979,11 +979,15 @@ export default function WatchClient() {
         durationMsRef.current = EPISODE_DURATION_MS
 
         const plannedTotal = typeof anime.totalEpisodes === 'number' ? anime.totalEpisodes : null
-        const synonyms = anime.alternativeTitle ? [anime.alternativeTitle] : []
+        const synonyms = [
+          ...(anime.alternativeTitle ? [anime.alternativeTitle] : []),
+          ...(Array.isArray(anime.altTitles) ? anime.altTitles : [])
+        ]
+        const uniqueSynonyms = [...new Set(synonyms)].filter(t => t !== anime.title)
 
         animeInfoRef.current = {
           title: anime.title ?? 'Unknown',
-          altTitles: synonyms.length > 0 ? synonyms : undefined,
+          altTitles: uniqueSynonyms.length > 0 ? uniqueSynonyms : undefined,
           poster: anime.poster ?? '',
           totalEpisodes: plannedTotal ?? undefined,
         }
