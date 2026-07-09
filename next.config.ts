@@ -21,10 +21,6 @@ const nextConfig: NextConfig = {
     ignoreDuringBuilds: true,
   },
 
-  // Fix: workspace root agar Next.js tidak salah deteksi multi-lockfile
-  // (warning "We detected multiple lockfiles" di Vercel).
-  outputFileTracingRoot: path.join(__dirname, '../'),
-
   // Hapus header X-Powered-By supaya gak expose tech stack
   poweredByHeader: false,
 
@@ -106,7 +102,6 @@ const nextConfig: NextConfig = {
       'framer-motion',
       'lucide-react',
       'date-fns',
-      'recharts',
       'firebase',
     ],
   },
