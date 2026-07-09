@@ -2821,15 +2821,27 @@ async function sokujPlaylist(episodeSlug: string): Promise<SokujPlaylistResponse
     const cached = cacheGet<SokujPlaylistResponse>(cacheKey)
     if (cached) return cached
 
+    const scraperKey = process.env.SCRAPER_API_KEY
+
     for (const base of SOKUJA_MIRRORS) {
         try {
-            const res = await withTimeout(
-                fetch(`${base}/api/playlist/?slug=${encodeURIComponent(episodeSlug)}`, {
-                    headers: { ...HTML_HDRS, Accept: 'application/json' },
-                    cache: 'no-store',
-                }),
-                5_000,
-            )
+            let res: Response
+            const targetUrl = `${base}/api/playlist/?slug=${encodeURIComponent(episodeSlug)}`
+            if (scraperKey) {
+                const proxyUrl = `https://api.scraperapi.com/?api_key=${scraperKey}&url=${encodeURIComponent(targetUrl)}`
+                res = await withTimeout(
+                    fetch(proxyUrl, { cache: 'no-store' }),
+                    10_000,
+                )
+            } else {
+                res = await withTimeout(
+                    fetch(targetUrl, {
+                        headers: { ...HTML_HDRS, Accept: 'application/json' },
+                        cache: 'no-store',
+                    }),
+                    5_000,
+                )
+            }
             if (!res.ok) continue
             const json = await res.json() as SokujPlaylistResponse
             if (json?.episodes?.length > 0) {
@@ -3085,15 +3097,27 @@ async function sokujVideoMirrors(episodeId: number): Promise<SokujSource[]> {
     const cached = cacheGet<SokujSource[]>(cacheKey)
     if (cached) return cached
 
+    const scraperKey = process.env.SCRAPER_API_KEY
+
     for (const base of SOKUJA_MIRRORS) {
         try {
-            const res = await withTimeout(
-                fetch(`${base}/api/video-mirrors/?e=${episodeId}`, {
-                    headers: { ...HTML_HDRS, Accept: 'application/json' },
-                    cache: 'no-store',
-                }),
-                5_000,
-            )
+            let res: Response
+            const targetUrl = `${base}/api/video-mirrors/?e=${episodeId}`
+            if (scraperKey) {
+                const proxyUrl = `https://api.scraperapi.com/?api_key=${scraperKey}&url=${encodeURIComponent(targetUrl)}`
+                res = await withTimeout(
+                    fetch(proxyUrl, { cache: 'no-store' }),
+                    10_000,
+                )
+            } else {
+                res = await withTimeout(
+                    fetch(targetUrl, {
+                        headers: { ...HTML_HDRS, Accept: 'application/json' },
+                        cache: 'no-store',
+                    }),
+                    5_000,
+                )
+            }
             if (!res.ok) continue
 
             const json = await res.json() as SokujMirrorsResponse
