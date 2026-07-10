@@ -1018,6 +1018,7 @@ const JP_PARTICLES = /\s+\b(no|wa|ga|wo|ni|to|de|mo|ya|ka|na|yo|ne|he)\b/gi
 
 function cleanOtakuTitle(raw: string): string {
     return raw
+        .replace(/^\[(?:Ongoing|Completed|Batch|BD)\]/i, '')
         .replace(/\s*(Batch|\[BATCH\]|Sub\s*Indo|Subtitle\s*Indonesia|\d{1,2}\s+\w+,?\s*\d{4}).*/i, '')
         .replace(/\s+/g, ' ')
         .trim() || raw.trim()
@@ -1080,11 +1081,22 @@ function titleVariants(raw: string): string[] {
     const twoWords = clean.split(' ').slice(0, 2).join(' ')
     if (twoWords.length > 3) variants.add(twoWords)
 
-    const noRoman = clean.replace(/\b(II|III|IV|VI|VII|VIII|IX)\b/g, m => {
-        const map: Record<string, string> = { II: '2', III: '3', IV: '4', VI: '6', VII: '7', VIII: '8', IX: '9' }
-        return map[m] ?? m
+    const noRoman = clean.replace(/\b(II|III|IV|V|VI|VII|VIII|IX|X|XI|XII)\b/gi, m => {
+        const map: Record<string, string> = {
+            ii: '2', iii: '3', iv: '4', v: '5', vi: '6', vii: '7', viii: '8', ix: '9', x: '10', xi: '11', xii: '12'
+        }
+        return map[m.toLowerCase()] ?? m
     })
     if (noRoman !== clean) variants.add(noRoman)
+
+    // Arabic to Roman numerals (e.g. "Season 2" -> "Season II")
+    const arabicToRoman: Record<string, string> = {
+        '1': 'I', '2': 'II', '3': 'III', '4': 'IV', '5': 'V',
+        '6': 'VI', '7': 'VII', '8': 'VIII', '9': 'IX', '10': 'X',
+        '11': 'XI', '12': 'XII'
+    }
+    const romanVariant = clean.replace(/\b(12|11|10|[1-9])\b/g, m => arabicToRoman[m] ?? m)
+    if (romanVariant !== clean) variants.add(romanVariant)
 
     const noParticle = clean.replace(JP_PARTICLES, ' ').replace(/\s+/g, ' ').trim()
     if (noParticle && noParticle !== clean) {
@@ -1275,10 +1287,11 @@ function titleSimilarity(a: string, b: string): number {
             .normalize("NFD")
             .replace(/[\u0300-\u036f]/g, "") // strip accents/diacritics
             .toLowerCase()
+            .replace(/&/g, ' and ') // normalize ampersand
             .replace(/\bwo\b/g, 'o') // normalize wo -> o
-            .replace(/\b(ii|iii|iv|v|vi|vii|viii|ix|x)\b/g, m => {
+            .replace(/\b(ii|iii|iv|v|vi|vii|viii|ix|x|xi|xii)\b/g, m => {
                 const map: Record<string, string> = {
-                    ii: '2', iii: '3', iv: '4', v: '5', vi: '6', vii: '7', viii: '8', ix: '9', x: '10'
+                    ii: '2', iii: '3', iv: '4', v: '5', vi: '6', vii: '7', viii: '8', ix: '9', x: '10', xi: '11', xii: '12'
                 }
                 return map[m] ?? m
             })
