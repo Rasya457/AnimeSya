@@ -1166,7 +1166,10 @@ export default function WatchClient() {
     if (!videoEl) return
 
     let cancelled = false
-    const proxiedUrl = `/api/proxy/stream-indo?endpoint=proxy-video&url=${encodeURIComponent(directUrl)}&referer=${encodeURIComponent(indoReferer ?? indoSrc ?? directUrl)}`
+    const isHls = directUrl!.includes('.m3u8')
+    const proxiedUrl = isHls
+      ? `/api/proxy/stream-indo?endpoint=proxy-video&url=${encodeURIComponent(directUrl)}&referer=${encodeURIComponent(indoReferer ?? indoSrc ?? directUrl)}`
+      : directUrl!
 
     async function setupVideo() {
       if (!videoEl) return
@@ -1177,7 +1180,6 @@ export default function WatchClient() {
       const resumeAt = resumeSecondsRef.current || loadPosition(malId, epNum)
       resumeSecondsRef.current = 0
 
-      const isHls = directUrl!.includes('.m3u8')
       const hasNativeHls = videoEl.canPlayType('application/vnd.apple.mpegurl') !== ''
 
       if (isHls && !hasNativeHls) {
