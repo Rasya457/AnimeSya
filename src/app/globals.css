@@ -3,9 +3,9 @@
 :root {
   --background: #09090b;
   --foreground: #f4f4f5;
-  --accent: #8b5cf6;
-  --accent-hover: #7c3aed;
-  --accent-glow: rgba(139, 92, 246, 0.25);
+  --accent: #0cdb7e;
+  --accent-hover: #05be6a;
+  --accent-glow: rgba(12, 219, 126, 0.25);
   --card: #18181b;
   --card-border: rgba(255, 255, 255, 0.08);
 }
