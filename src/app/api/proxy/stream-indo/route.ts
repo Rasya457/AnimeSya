@@ -1053,8 +1053,16 @@ function normalizeOrdinalSeason(s: string): string {
 
 function titleVariants(raw: string): string[] {
     const variants = new Set<string>()
-    const clean = raw.trim()
+    const clean = raw.normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim()
     variants.add(clean)
+
+    // Generate o <-> wo variants
+    if (/\bwo\b/i.test(clean)) {
+        variants.add(clean.replace(/\bwo\b/gi, 'o').replace(/\s+/g, ' ').trim())
+    }
+    if (/\bo\b/i.test(clean)) {
+        variants.add(clean.replace(/\bo\b/gi, 'wo').replace(/\s+/g, ' ').trim())
+    }
 
     // "Second Season" → "Season 2" dst, so this becomes the basis for
     // noSubtitle/noSeason below — that's what lets noSeason's digit-only
@@ -1264,7 +1272,10 @@ function levenshtein(a: string, b: string): number {
 function titleSimilarity(a: string, b: string): number {
     const normalize = (s: string) =>
         normalizeOrdinalSeason(s)
+            .normalize("NFD")
+            .replace(/[\u0300-\u036f]/g, "") // strip accents/diacritics
             .toLowerCase()
+            .replace(/\bwo\b/g, 'o') // normalize wo -> o
             .replace(/\b(ii|iii|iv|v|vi|vii|viii|ix|x)\b/g, m => {
                 const map: Record<string, string> = {
                     ii: '2', iii: '3', iv: '4', v: '5', vi: '6', vii: '7', viii: '8', ix: '9', x: '10'
