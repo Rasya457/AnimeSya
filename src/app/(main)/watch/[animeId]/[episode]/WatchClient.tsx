@@ -943,6 +943,13 @@ export default function WatchClient() {
     return () => {
       cancelled = true
       if (hlsRef.current) { hlsRef.current.destroy(); hlsRef.current = null }
+      if (videoEl) {
+        try {
+          videoEl.pause()
+          videoEl.removeAttribute('src')
+          videoEl.load()
+        } catch { /* ignore */ }
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [directUrl, server])

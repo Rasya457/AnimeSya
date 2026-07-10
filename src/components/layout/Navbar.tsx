@@ -37,7 +37,7 @@ export const Navbar: React.FC = () => {
     <header className="fixed top-0 left-0 right-0 h-20 z-40 glass-navbar flex items-center justify-between px-6 md:px-12">
       {/* Brand Logo */}
       <div className="flex items-center gap-10">
-        <Link href="/" className="flex items-center gap-2 group">
+        <Link href="/" prefetch={false} className="flex items-center gap-2 group">
           <span className="text-xl md:text-2xl font-black tracking-tight brand-logo-text group-hover:opacity-90 transition-opacity">
             AnimeSya
           </span>
@@ -46,13 +46,13 @@ export const Navbar: React.FC = () => {
 
         {/* Desktop Navigation Links */}
         <nav className="hidden md:flex items-center gap-8 text-sm font-medium">
-          <Link href="/" className={activeClass("/")}>
+          <Link href="/" prefetch={false} className={activeClass("/")}>
             Home
           </Link>
-          <Link href="/watchlist" className={activeClass("/watchlist")}>
+          <Link href="/watchlist" prefetch={false} className={activeClass("/watchlist")}>
             Watchlist
           </Link>
-          <Link href="/history" className={activeClass("/history")}>
+          <Link href="/history" prefetch={false} className={activeClass("/history")}>
             History
           </Link>
         </nav>
@@ -115,6 +115,7 @@ export const Navbar: React.FC = () => {
 
                   <Link
                     href="/profile"
+                    prefetch={false}
                     className="flex items-center gap-3 px-3 py-2 text-sm text-zinc-300 hover:text-zinc-100 hover:bg-zinc-900/60 rounded-lg transition-colors"
                     onClick={() => setDropdownOpen(false)}
                   >
@@ -124,6 +125,7 @@ export const Navbar: React.FC = () => {
 
                   <Link
                     href="/watchlist"
+                    prefetch={false}
                     className="flex items-center gap-3 px-3 py-2 text-sm text-zinc-300 hover:text-zinc-100 hover:bg-zinc-900/60 rounded-lg transition-colors"
                     onClick={() => setDropdownOpen(false)}
                   >
@@ -133,6 +135,7 @@ export const Navbar: React.FC = () => {
 
                   <Link
                     href="/history"
+                    prefetch={false}
                     className="flex items-center gap-3 px-3 py-2 text-sm text-zinc-300 hover:text-zinc-100 hover:bg-zinc-900/60 rounded-lg transition-colors"
                     onClick={() => setDropdownOpen(false)}
                   >
@@ -142,6 +145,7 @@ export const Navbar: React.FC = () => {
 
                   <Link
                     href="/profile/settings"
+                    prefetch={false}
                     className="flex items-center gap-3 px-3 py-2 text-sm text-zinc-300 hover:text-zinc-100 hover:bg-zinc-900/60 rounded-lg transition-colors"
                     onClick={() => setDropdownOpen(false)}
                   >
@@ -165,7 +169,7 @@ export const Navbar: React.FC = () => {
             </AnimatePresence>
           </div>
         ) : (
-          <Link href="/login">
+          <Link href="/login" prefetch={false}>
             <Button size="sm">Sign In</Button>
           </Link>
         )}
