@@ -4,6 +4,7 @@ import React, { useEffect, useState, useMemo } from "react";
 import Link from "next/link";
 import Image from "next/image";
 import { History, Trash2, Play, Clock, LayoutGrid, List, Search, X } from "lucide-react";
+import { useRouter } from "next/navigation";
 import { useAuthStore } from "@/store/authStore";
 import { getHistoryKey } from "@/lib/historyKey";
 
@@ -79,7 +80,8 @@ function groupByDate(items: HistoryItem[]): DateGroup[] {
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function HistoryPage() {
-  const { user } = useAuthStore();
+  const router = useRouter();
+  const { user, isAuthenticated, isAuthLoading } = useAuthStore();
   const [items,   setItems]   = useState<HistoryItem[]>([]);
   const [view,    setView]    = useState<ViewMode>("grid");
   const [query,   setQuery]   = useState("");
@@ -98,6 +100,13 @@ export default function HistoryPage() {
     setItems(unique.reverse());
     setMounted(true);
   }, [user?.id]);
+
+  // Redirect client-side if not authenticated
+  useEffect(() => {
+    if (mounted && !isAuthLoading && !isAuthenticated) {
+      router.push("/login?callbackUrl=/history");
+    }
+  }, [mounted, isAuthenticated, isAuthLoading, router]);
 
   function handleRemove(malId: string, episode: number) {
     const key = getHistoryKey(user?.id)

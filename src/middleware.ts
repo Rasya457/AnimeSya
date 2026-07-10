@@ -5,7 +5,7 @@ import type { NextRequest } from "next/server";
 // Catatan: /admin juga masuk sini untuk optimistic check (token ada/tidak).
 // Verifikasi ROLE sungguhan dilakukan di Server Component layout → (admin)/admin/layout.tsx
 // karena middleware berjalan di Edge Runtime yang tidak support firebase-admin SDK.
-const PROTECTED_ROUTES = ["/profile", "/watchlist", "/history", "/admin"];
+const PROTECTED_ROUTES = ["/admin"];
 
 export function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;

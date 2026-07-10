@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useMemo } from "react";
 import Link from "next/link";
 import { Heart, Search, Film, Calendar, Star, AlertCircle, Eye, EyeOff, Loader2 } from "lucide-react";
+import { useRouter } from "next/navigation";
 import { useAuthStore } from "@/store/authStore";
 import { useAnime } from "@/hooks/useAnime";
 import { WatchlistStatus } from "@/types/auth";
@@ -10,7 +11,8 @@ import AnimeCard from "@/components/anime/AnimeCard";
 import { Button } from "@/components/ui/Button";
 
 export default function WatchlistPage() {
-  const { watchlist } = useAuthStore();
+  const router = useRouter();
+  const { watchlist, isAuthenticated, isAuthLoading } = useAuthStore();
   const { getById } = useAnime();
   const [activeTab, setActiveTab] = useState<"All" | WatchlistStatus>("All");
   const [mounted, setMounted] = useState(false);
@@ -21,6 +23,13 @@ export default function WatchlistPage() {
   useEffect(() => {
     setMounted(true);
   }, []);
+
+  // Redirect client-side if not authenticated
+  useEffect(() => {
+    if (mounted && !isAuthLoading && !isAuthenticated) {
+      router.push("/login?callbackUrl=/watchlist");
+    }
+  }, [mounted, isAuthenticated, isAuthLoading, router]);
 
   // Fetch details for watchlist items that are not in the homepage local cache
   useEffect(() => {

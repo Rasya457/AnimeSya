@@ -10,9 +10,16 @@ import { Button } from "@/components/ui/Button";
 
 export default function SettingsPage() {
   const router = useRouter();
-  const { user, updateProfile, logout } = useAuthStore();
+  const { user, updateProfile, logout, isAuthenticated, isAuthLoading } = useAuthStore();
   const [autoplay, setAutoplay] = useState(true);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Redirect client-side if not authenticated
+  useEffect(() => {
+    if (!isAuthLoading && !isAuthenticated) {
+      router.push("/login?callbackUrl=/profile/settings");
+    }
+  }, [isAuthenticated, isAuthLoading, router]);
 
   useEffect(() => {
     try {
@@ -40,7 +47,7 @@ export default function SettingsPage() {
     }
   }, [user]);
 
-  if (!user) return null;
+  if (isAuthLoading || !user) return null;
 
   // Convert uploaded image to base64 and set as avatar
   function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
