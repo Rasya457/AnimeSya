@@ -280,7 +280,7 @@ export default function DetailClient({ anime }: DetailClientProps) {
                         alt={rel.title}
                         fill
                         sizes="160px"
-                        className="object-cover object-center group-hover:scale-105 transition-transform duration-300"
+                        className="object-cover object-center transition-transform duration-700 ease-[cubic-bezier(0.16,1,0.3,1)] group-hover:scale-[1.03]"
                         draggable={false}
                       />
                     ) : (

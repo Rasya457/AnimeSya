@@ -11,6 +11,8 @@
 }
 
 @theme {
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-display: var(--font-outfit), ui-sans-serif, system-ui, sans-serif;
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --color-accent: var(--accent);
@@ -102,5 +104,13 @@ body {
 
 .animate-bounce-right {
   animation: bounce-right 0.6s ease-in-out infinite;
+}
+
+@utility brand-logo-text {
+  font-family: var(--font-display), sans-serif;
+  background: linear-gradient(135deg, var(--accent) 0%, #34d399 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
 }
 

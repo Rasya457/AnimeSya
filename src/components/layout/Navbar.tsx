@@ -38,7 +38,7 @@ export const Navbar: React.FC = () => {
       {/* Brand Logo */}
       <div className="flex items-center gap-10">
         <Link href="/" className="flex items-center gap-2 group">
-          <span className="text-xl md:text-2xl font-black tracking-tight bg-gradient-to-r from-accent to-emerald-400 bg-clip-text text-transparent group-hover:opacity-90 transition-opacity">
+          <span className="text-xl md:text-2xl font-black tracking-tight brand-logo-text group-hover:opacity-90 transition-opacity">
             AnimeSya
           </span>
           <span className="w-1.5 h-1.5 rounded-full bg-accent animate-pulse" />

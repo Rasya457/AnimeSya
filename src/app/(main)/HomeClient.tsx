@@ -455,7 +455,7 @@ function HistoryCard({ item, onRemove }: { item: HistoryItem; onRemove: (malId: 
               alt={item.title}
               fill
               sizes="200px"
-              className="object-cover object-top transition-transform duration-300 group-hover:scale-105"
+              className="object-cover object-top transition-transform duration-700 ease-[cubic-bezier(0.16,1,0.3,1)] group-hover:scale-[1.03]"
               draggable={false}
             />
           ) : (

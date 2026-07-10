@@ -6,7 +6,7 @@ export const Footer: React.FC = () => {
     <footer className="w-full bg-zinc-950 border-t border-zinc-900 py-10 px-6 md:px-12 mt-auto text-zinc-500 text-xs md:text-sm flex flex-col md:flex-row items-center justify-between gap-6">
       <div className="flex flex-col items-center md:items-start gap-2">
         <div className="flex items-center gap-2">
-          <span className="text-sm font-black tracking-tight bg-gradient-to-r from-accent to-emerald-400 bg-clip-text text-transparent">
+          <span className="text-sm font-black tracking-tight brand-logo-text">
             AnimeSya
           </span>
           <span className="w-1 h-1 rounded-full bg-accent" />

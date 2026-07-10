@@ -90,7 +90,7 @@ function RegisterForm() {
         {/* Brand/Header */}
         <div className="flex flex-col items-center text-center gap-2">
           <Link href="/" className="flex items-center gap-2 group mb-2">
-            <span className="text-2xl font-black tracking-tight bg-gradient-to-r from-accent to-emerald-400 bg-clip-text text-transparent group-hover:opacity-90">
+            <span className="text-2xl font-black tracking-tight brand-logo-text group-hover:opacity-90">
               AnimeSya
             </span>
             <span className="w-1.5 h-1.5 rounded-full bg-accent animate-pulse" />

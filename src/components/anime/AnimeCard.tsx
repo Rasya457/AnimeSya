@@ -34,7 +34,7 @@ const AnimeCard: React.FC<AnimeCardProps> = ({ anime, showEpisodeBadge = false, 
             alt={anime.title ?? ''}
             fill
             sizes="(max-width: 768px) 160px, 192px"
-            className="object-cover md:group-hover:scale-106 transition-transform duration-700 ease-[cubic-bezier(0.25,1,0.5,1)]"
+            className="object-cover md:group-hover:scale-[1.03] transition-transform duration-700 ease-[cubic-bezier(0.16,1,0.3,1)]"
           />
         ) : (
           <div className="w-full h-full bg-zinc-800 flex items-center justify-center">
@@ -47,7 +47,7 @@ const AnimeCard: React.FC<AnimeCardProps> = ({ anime, showEpisodeBadge = false, 
 
         {/* Play button on hover */}
         <div className="absolute inset-0 flex items-center justify-center bg-black/40 opacity-0 md:group-hover:opacity-100 transition-opacity duration-300">
-          <div className="w-12 h-12 rounded-full bg-accent flex items-center justify-center scale-90 md:group-hover:scale-100 transition-transform duration-500 ease-[cubic-bezier(0.34,1.56,0.64,1)]">
+          <div className="w-12 h-12 rounded-full bg-accent flex items-center justify-center scale-90 md:group-hover:scale-100 transition-transform duration-500 ease-[cubic-bezier(0.16,1,0.3,1)]">
             <Play className="w-5 h-5 text-zinc-950 fill-zinc-950 translate-x-[2px]" />
           </div>
         </div>
