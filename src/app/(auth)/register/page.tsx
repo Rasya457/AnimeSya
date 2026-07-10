@@ -73,7 +73,8 @@ function RegisterForm() {
       router.push(getRedirectUrl());
     } catch (err: any) {
       console.error("Google sign up error:", err);
-      setGeneralError("Gagal mendaftar dengan Google.");
+      const errCode = err?.code ? ` (${err.code})` : "";
+      setGeneralError(`Gagal mendaftar dengan Google${errCode}.`);
     } finally {
       setLoading(false);
     }

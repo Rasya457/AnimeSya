@@ -68,7 +68,8 @@ function LoginForm() {
       router.push(getRedirectUrl());
     } catch (err: any) {
       console.error("Google sign in error:", err);
-      setGeneralError("Gagal masuk dengan Google.");
+      const errCode = err?.code ? ` (${err.code})` : "";
+      setGeneralError(`Gagal masuk dengan Google${errCode}.`);
     } finally {
       setLoading(false);
     }
