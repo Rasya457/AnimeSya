@@ -2367,7 +2367,7 @@ async function resolveStreamForEpisode(
     }
 
     const result: StreamResult = { iframe, directUrl, mirrors, resolved, availableQualities }
-    if (resolved) cacheSet(cacheKey, result, 5 * 60 * 1000)
+    if (resolved) cacheSet(cacheKey, result, 6 * 60 * 60 * 1000)
     return result
 }
 
@@ -2601,7 +2601,7 @@ async function nontonResolveStream(
     // fallback ke iframe mentah karena host-nya udah dikenal/dipercaya.
     const resolved = !!directUrl
     const result: StreamResult = { iframe, directUrl, mirrors: [], resolved, availableQualities }
-    if (resolved) cacheSet(cacheKey, result, 5 * 60 * 1000)
+    if (resolved) cacheSet(cacheKey, result, 6 * 60 * 60 * 1000)
     return result
 }
 
@@ -3200,7 +3200,7 @@ async function sokujResolveStream(
 
     const resolved = !!directUrl
     const result: StreamResult = { iframe, directUrl, mirrors: [], resolved, availableQualities }
-    if (resolved) cacheSet(cacheKey, result, 5 * 60 * 1000)
+    if (resolved) cacheSet(cacheKey, result, 6 * 60 * 60 * 1000)
     return result
 }
 
@@ -4025,7 +4025,7 @@ export async function GET(req: Request) {
                 },
             }
 
-            if (stream.resolved) cacheSet(cacheKey, result, 5 * 60 * 1000)
+            if (stream.resolved) cacheSet(cacheKey, result, 6 * 60 * 60 * 1000)
             return Response.json({ data: result })
         }
 
@@ -4098,7 +4098,7 @@ export async function GET(req: Request) {
                     { status: 404 }
                 )
 
-            cacheSet(cacheKey, iframe, 5 * 60 * 1000)
+            cacheSet(cacheKey, iframe, 6 * 60 * 60 * 1000)
             return Response.json({ data: { iframe } })
         }
 

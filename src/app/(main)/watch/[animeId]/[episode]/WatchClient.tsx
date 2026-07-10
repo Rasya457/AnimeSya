@@ -4,6 +4,7 @@ import { useState, useEffect, useRef, useMemo, type ChangeEvent } from 'react'
 import Link from 'next/link'
 import NextImage from 'next/image'
 import { useParams, useRouter } from 'next/navigation'
+import dynamic from 'next/dynamic'
 import {
   ChevronLeft, ChevronRight, RefreshCw,
   ArrowLeft, Loader2, Send, MessageCircle, Trash2,
@@ -12,15 +13,14 @@ import {
   RotateCcw, RotateCw, Play, Pause, SkipBack, SkipForward
 } from 'lucide-react'
 import { useAuthStore } from '@/store/authStore'
-import { db } from '@/lib/firebase'
-import {
-  collection, query, where, onSnapshot,
-  addDoc, deleteDoc, doc, serverTimestamp,
-  type Timestamp,
-} from 'firebase/firestore'
 import { useToast } from '@/components/ui/Toast'
 import { getHistoryKey } from '@/lib/historyKey'
 import { loadPosition, savePosition } from '@/lib/watchPosition'
+
+const CommentSection = dynamic(() => import('@/components/watch/CommentSection'), {
+  ssr: false,
+  loading: () => <div className="text-sm text-zinc-500 animate-pulse py-6">Memuat komentar...</div>
+})
 
 type Server = 'sub' | 'dub' | 'indo'
 
@@ -36,15 +36,6 @@ interface HistoryEntry {
   progress: number
   totalEpisodes?: number
   watchedEpisodes?: number[]
-}
-
-interface Comment {
-  id: string
-  parentId: string | null
-  authorId: string
-  authorName: string
-  text: string
-  createdAt: number
 }
 
 interface DownloadHost {
@@ -176,316 +167,6 @@ function LoadingOverlay({ label = 'Memuat player…' }: { label?: string }) {
       </div>
       <span className="text-xs text-emerald-300/60 font-bold uppercase tracking-wider">{label}</span>
     </div>
-  )
-}
-
-// ─── Comments Section ─────────────────────────────────────────────────────────
-// Firestore (collection "comments") — shared antar semua user, bukan
-// localStorage lagi. Reply cuma 1 level (kayak YouTube): parentId nunjuk ke
-// id komentar top-level, reply gak bisa di-reply lagi.
-//
-// Query cuma pakai 1 equality filter (episodeKey) tanpa orderBy di Firestore
-// — sengaja, biar gak butuh composite index dan gak ada quirk sorting pas
-// serverTimestamp() masih pending di optimistic write. Sorting dikerjain di
-// client (sortedTopLevel/repliesByParent di bawah).
-function CommentSection({ malId, epNum }: { malId: string; epNum: number }) {
-  const { user } = useAuthStore()
-  const episodeKey = `${malId}_${epNum}`
-
-  const [comments, setComments] = useState<Comment[]>([])
-  const [commentsLoading, setCommentsLoading] = useState(true)
-  const [commentText, setCommentText] = useState('')
-  const [submitting, setSubmitting] = useState(false)
-  const [activeTab, setActiveTab] = useState<'top' | 'newest'>('newest')
-
-  const [replyingTo, setReplyingTo] = useState<string | null>(null)
-  const [replyText, setReplyText] = useState('')
-  const [replySubmitting, setReplySubmitting] = useState(false)
-
-  useEffect(() => {
-    setCommentsLoading(true)
-    const q = query(collection(db, 'comments'), where('episodeKey', '==', episodeKey))
-    const unsub = onSnapshot(
-      q,
-      snap => {
-        const list: Comment[] = snap.docs.map(d => {
-          const data = d.data() as any
-          const ts = data.createdAt as Timestamp | null
-          return {
-            id: d.id,
-            parentId: data.parentId ?? null,
-            authorId: data.authorId,
-            authorName: data.authorName ?? 'Pengguna',
-            text: data.text ?? '',
-            createdAt: ts ? ts.toMillis() : Date.now(), // pending write: fallback ke now
-          }
-        })
-        setComments(list)
-        setCommentsLoading(false)
-      },
-      () => setCommentsLoading(false),
-    )
-    return unsub
-  }, [episodeKey])
-
-  const topLevel = useMemo(() => comments.filter(c => !c.parentId), [comments])
-
-  const repliesByParent = useMemo(() => {
-    const map = new Map<string, Comment[]>()
-    for (const c of comments) {
-      if (!c.parentId) continue
-      const arr = map.get(c.parentId) ?? []
-      arr.push(c)
-      map.set(c.parentId, arr)
-    }
-    for (const arr of map.values()) arr.sort((a, b) => a.createdAt - b.createdAt)
-    return map
-  }, [comments])
-
-  const sortedTopLevel = useMemo(() => {
-    if (activeTab === 'newest') {
-      return [...topLevel].sort((a, b) => b.createdAt - a.createdAt)
-    }
-    // "Top" — belum ada like/dislike, jadi proxy-nya: jumlah reply dulu,
-    // baru panjang teks (high-effort), baru terbaru. Gampang diganti ke
-    // like-count beneran nanti.
-    return [...topLevel].sort((a, b) => {
-      const ra = repliesByParent.get(a.id)?.length ?? 0
-      const rb = repliesByParent.get(b.id)?.length ?? 0
-      return rb - ra || b.text.length - a.text.length || b.createdAt - a.createdAt
-    })
-  }, [topLevel, repliesByParent, activeTab])
-
-  async function handleSubmit() {
-    if (!commentText.trim() || !user || submitting) return
-    setSubmitting(true)
-    try {
-      await addDoc(collection(db, 'comments'), {
-        malId, episode: epNum, episodeKey,
-        parentId: null,
-        authorId: user.id,
-        authorName: user.name,
-        text: commentText.trim(),
-        createdAt: serverTimestamp(),
-      })
-      setCommentText('')
-    } catch {
-      // biarin teksnya tetep di textarea kalau gagal kirim, jangan ke-reset
-    } finally {
-      setSubmitting(false)
-    }
-  }
-
-  async function handleSubmitReply(parentId: string) {
-    if (!replyText.trim() || !user || replySubmitting) return
-    setReplySubmitting(true)
-    try {
-      await addDoc(collection(db, 'comments'), {
-        malId, episode: epNum, episodeKey,
-        parentId,
-        authorId: user.id,
-        authorName: user.name,
-        text: replyText.trim(),
-        createdAt: serverTimestamp(),
-      })
-      setReplyText('')
-      setReplyingTo(null)
-    } catch {
-      // biarin input reply tetep kebuka kalau gagal kirim
-    } finally {
-      setReplySubmitting(false)
-    }
-  }
-
-  async function handleDelete(id: string) {
-    try { await deleteDoc(doc(db, 'comments', id)) } catch { /* silent */ }
-  }
-
-  function formatDate(ts: number) {
-    return new Date(ts).toLocaleDateString('id-ID', {
-      day: 'numeric', month: 'short', year: 'numeric',
-      hour: '2-digit', minute: '2-digit',
-    })
-  }
-
-  const totalCommentCount = comments.length
-
-  function renderComment(c: Comment, isReply: boolean) {
-    const isOwn = !!user && c.authorId === user.id
-    const replies = isReply ? [] : repliesByParent.get(c.id) ?? []
-
-    return (
-      <div
-        key={c.id}
-        className={`rounded-2xl p-3.5 flex gap-3 border transition-colors ${isOwn ? 'bg-emerald-950/20 border-emerald-800/20' : 'bg-[#0f0f1a] border-white/5'
-          }`}
-      >
-        <div className={`w-8 h-8 rounded-full flex items-center justify-center text-[11px] font-extrabold text-white uppercase select-none flex-shrink-0 ${getAvatarBgColor(c.authorName)}`}>
-          {c.authorName[0]}
-        </div>
-        <div className="flex-1 flex flex-col gap-1.5 min-w-0 min-h-0">
-          <div className="flex items-center justify-between gap-1">
-            <div className="flex items-center gap-2 flex-wrap">
-              <span className="text-xs font-bold text-white">{c.authorName}</span>
-              {isOwn && (
-                <span className="text-[9px] font-bold text-emerald-400 bg-emerald-900/30 border border-emerald-700/30 px-1.5 py-0.5 rounded-full uppercase tracking-wide">Kamu</span>
-              )}
-              <span className="text-[10px] text-zinc-650 font-semibold">{formatDate(c.createdAt)}</span>
-            </div>
-            {isOwn && (
-              <button
-                onClick={() => handleDelete(c.id)}
-                className="p-1.5 rounded-lg text-zinc-600 hover:text-red-400 hover:bg-red-950/40 transition-colors cursor-pointer flex-shrink-0"
-                title="Hapus komentar"
-              >
-                <Trash2 className="w-3.5 h-3.5" />
-              </button>
-            )}
-          </div>
-
-          <p className="text-[13px] text-zinc-300 leading-relaxed whitespace-pre-wrap break-words">{c.text}</p>
-
-          {!isReply && (
-            <button
-              onClick={() => { setReplyingTo(replyingTo === c.id ? null : c.id); setReplyText('') }}
-              disabled={!user}
-              className="self-start text-[11px] font-bold text-zinc-500 hover:text-emerald-400 disabled:opacity-40 disabled:cursor-not-allowed transition-colors cursor-pointer mt-0.5"
-            >
-              {replyingTo === c.id ? 'Batal' : 'Balas'}
-            </button>
-          )}
-
-          {!isReply && replyingTo === c.id && user && (
-            <div className="flex items-start gap-2 mt-1.5">
-              <div className={`w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-extrabold text-white uppercase select-none flex-shrink-0 mt-0.5 ${getAvatarBgColor(user.name)}`}>
-                {user.name[0]}
-              </div>
-              <div className="flex-1 flex flex-col gap-1.5">
-                <textarea
-                  value={replyText}
-                  onChange={e => setReplyText(e.target.value)}
-                  onKeyDown={e => {
-                    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSubmitReply(c.id) }
-                  }}
-                  placeholder={`Balas ${c.authorName}...`}
-                  rows={1}
-                  maxLength={500}
-                  autoFocus
-                  className="w-full bg-[#07070f] border border-white/5 rounded-xl px-3 py-2 text-xs text-white placeholder-zinc-600 focus:outline-none focus:border-emerald-500/50 focus:ring-1 focus:ring-emerald-500/20 transition-all resize-none"
-                />
-                <div className="flex items-center justify-end gap-2">
-                  <button
-                    onClick={() => handleSubmitReply(c.id)}
-                    disabled={!replyText.trim() || replySubmitting}
-                    className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 disabled:opacity-30 disabled:cursor-not-allowed transition-all text-white text-[11px] font-bold cursor-pointer active:scale-95"
-                  >
-                    <Send className="w-3 h-3" />
-                    Kirim
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {!isReply && replies.length > 0 && (
-            <div className="flex flex-col gap-2.5 mt-2 pl-3 border-l-2 border-white/5">
-              {replies.map(r => renderComment(r, true))}
-            </div>
-          )}
-        </div>
-      </div>
-    )
-  }
-
-  return (
-    <section className="flex flex-col gap-4">
-      {/* Header */}
-      <div className="flex items-center gap-2">
-        <div className="w-6 h-6 rounded-lg bg-gradient-to-br from-emerald-500 to-teal-500 flex items-center justify-center flex-shrink-0">
-          <MessageCircle className="w-3.5 h-3.5 text-white" />
-        </div>
-        <h3 className="text-sm font-extrabold text-white">
-          {commentsLoading
-            ? 'Memuat komentar…'
-            : totalCommentCount === 0 ? 'Belum ada komentar' : `${totalCommentCount.toLocaleString('id-ID')} Komentar`}
-        </h3>
-      </div>
-
-      {/* Tab */}
-      <div className="flex items-center justify-between gap-2 border-b border-white/5 pb-3">
-        <div className="flex items-center gap-1 bg-[#0f0f1a] p-1 rounded-xl border border-white/5">
-          <button
-            onClick={() => setActiveTab('top')}
-            className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${activeTab === 'top'
-                ? 'bg-gradient-to-r from-emerald-600 to-teal-600 text-white shadow-sm'
-                : 'text-zinc-500 hover:text-zinc-300'
-              }`}
-          >
-            Top
-          </button>
-          <button
-            onClick={() => setActiveTab('newest')}
-            className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${activeTab === 'newest'
-                ? 'bg-gradient-to-r from-emerald-600 to-teal-600 text-white shadow-sm'
-                : 'text-zinc-500 hover:text-zinc-300'
-              }`}
-          >
-            Terbaru
-          </button>
-        </div>
-      </div>
-
-      {/* Input — komentar baru */}
-      {user ? (
-        <div className="flex items-start gap-2.5 bg-[#0f0f1a] border border-white/5 rounded-2xl p-3.5">
-          <div className={`w-8 h-8 rounded-full flex items-center justify-center text-[11px] font-extrabold text-white uppercase select-none flex-shrink-0 mt-0.5 ${getAvatarBgColor(user.name)}`}>
-            {user.name[0]}
-          </div>
-          <div className="flex-1 flex flex-col gap-2">
-            <span className="text-[10px] font-bold text-zinc-400">{user.name}</span>
-            <textarea
-              value={commentText}
-              onChange={e => setCommentText(e.target.value)}
-              onKeyDown={e => {
-                if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSubmit() }
-              }}
-              placeholder="Tulis komentar kamu..."
-              rows={2}
-              maxLength={500}
-              className="w-full bg-[#07070f] border border-white/5 rounded-xl px-3 py-2.5 text-xs text-white placeholder-zinc-600 focus:outline-none focus:border-emerald-500/50 focus:ring-1 focus:ring-emerald-500/20 transition-all resize-none"
-            />
-            <div className="flex items-center justify-between">
-              <span className="text-[10px] text-zinc-600">{commentText.length}/500</span>
-              <button
-                onClick={handleSubmit}
-                disabled={!commentText.trim() || submitting}
-                className="flex items-center gap-1.5 px-4 py-1.5 rounded-full bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 disabled:opacity-30 disabled:cursor-not-allowed transition-all text-white text-xs font-bold cursor-pointer active:scale-95 shadow-md shadow-emerald-500/20"
-              >
-                <Send className="w-3 h-3" />
-                <span>Kirim</span>
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : (
-        <div className="flex items-center justify-center gap-2 bg-[#0f0f1a] border border-white/5 rounded-2xl p-4 text-xs text-zinc-500 font-medium">
-          Login dulu buat ikut komentar
-        </div>
-      )}
-
-      {/* Comment list */}
-      <div className="flex flex-col gap-2.5 mt-1">
-        {!commentsLoading && sortedTopLevel.length === 0 && (
-          <div className="flex flex-col items-center gap-2 py-10 text-zinc-600">
-            <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-emerald-500/10 to-teal-500/10 border border-emerald-500/10 flex items-center justify-center">
-              <MessageCircle className="w-5 h-5 opacity-40" />
-            </div>
-            <p className="text-xs font-medium">Jadilah yang pertama berkomentar!</p>
-          </div>
-        )}
-        {sortedTopLevel.map(c => renderComment(c, false))}
-      </div>
-    </section>
   )
 }
 
