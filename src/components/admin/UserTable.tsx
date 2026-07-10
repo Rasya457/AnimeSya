@@ -68,7 +68,7 @@ export default function UserTable({ initialUsers }: { initialUsers: AdminUserRow
         value={query}
         onChange={(e) => setQuery(e.target.value)}
         placeholder="Cari nama atau email..."
-        className="w-full rounded-lg bg-zinc-900 border border-emerald-900/40 px-4 py-2.5 text-sm text-zinc-200 placeholder:text-zinc-600 focus:outline-none focus:border-emerald-500/60 focus:ring-1 focus:ring-emerald-500/30 transition-colors"
+        className="w-full rounded-lg bg-zinc-900 border border-zinc-800/80 px-4 py-2.5 text-sm text-zinc-200 placeholder:text-zinc-600 focus:outline-none focus:border-accent/60 focus:ring-1 focus:ring-accent/30 transition-colors"
       />
 
       {error && (
@@ -77,8 +77,8 @@ export default function UserTable({ initialUsers }: { initialUsers: AdminUserRow
         </div>
       )}
 
-      <div className="rounded-xl border border-emerald-900/30 bg-zinc-950/60 overflow-hidden">
-        <div className="hidden sm:grid grid-cols-[2fr_2fr_1fr_1fr_auto] gap-4 px-5 py-3 border-b border-emerald-900/30 bg-zinc-900/40 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
+      <div className="rounded-xl border border-zinc-800 bg-zinc-950/60 overflow-hidden">
+        <div className="hidden sm:grid grid-cols-[2fr_2fr_1fr_1fr_auto] gap-4 px-5 py-3 border-b border-zinc-800 bg-zinc-900/40 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
           <span>User</span>
           <span>Email</span>
           <span>Bergabung</span>
@@ -86,7 +86,7 @@ export default function UserTable({ initialUsers }: { initialUsers: AdminUserRow
           <span className="text-right">Aksi</span>
         </div>
 
-        <div className="divide-y divide-emerald-900/20">
+        <div className="divide-y divide-zinc-800/40">
           {filtered.length === 0 && (
             <div className="px-5 py-10 text-center text-sm text-zinc-600">Gak ada user yang cocok.</div>
           )}
@@ -99,13 +99,13 @@ export default function UserTable({ initialUsers }: { initialUsers: AdminUserRow
                 className="grid grid-cols-1 sm:grid-cols-[2fr_2fr_1fr_1fr_auto] gap-2 sm:gap-4 px-5 py-3 sm:items-center"
               >
                 <div className="flex items-center gap-3 min-w-0">
-                  <div className="w-8 h-8 rounded-full bg-zinc-900 border border-emerald-900/40 flex items-center justify-center shrink-0">
-                    <span className="text-xs font-bold text-emerald-400 uppercase">{u.name.charAt(0)}</span>
+                  <div className="w-8 h-8 rounded-full bg-zinc-900 border border-zinc-800/60 flex items-center justify-center shrink-0">
+                    <span className="text-xs font-bold text-accent uppercase">{u.name.charAt(0)}</span>
                   </div>
                   <div className="min-w-0">
                     <p className="text-sm font-medium text-zinc-200 truncate">{u.name}</p>
                     {u.role === "admin" && (
-                      <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-400">
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-accent">
                         Admin
                       </span>
                     )}
@@ -121,7 +121,7 @@ export default function UserTable({ initialUsers }: { initialUsers: AdminUserRow
                       Banned
                     </span>
                   ) : (
-                    <span className="text-[10px] font-semibold uppercase tracking-wider text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded-full">
+                    <span className="text-[10px] font-semibold uppercase tracking-wider text-accent bg-accent/10 border border-accent/20 px-2 py-0.5 rounded-full">
                       Aktif
                     </span>
                   )}
